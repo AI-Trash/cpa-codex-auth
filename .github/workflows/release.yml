@@ -37,20 +37,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist
           go build -trimpath -ldflags "-s -w" -o dist/cpa-codex-auth-windows-amd64.exe .
 
-      - name: Replace snapshot release
+      - name: Update Snapshot Release
+        uses: andelf/nightly-release@main
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "repos/${{ github.repository }}/git/refs/tags/snapshot" --method PATCH --field sha="${{ github.sha }}" --raw-field force=true 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            $global:LASTEXITCODE = 0
-            gh api "repos/${{ github.repository }}/git/refs" --method POST --field ref="refs/tags/snapshot" --field sha="${{ github.sha }}"
-          }
-          gh release view snapshot 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            gh release edit snapshot --target "${{ github.sha }}" --title "Snapshot" --notes "Automated snapshot build from main at ${{ github.sha }}." --prerelease
-            gh release upload snapshot "dist/cpa-codex-auth-windows-amd64.exe" --clobber
-          } else {
-            $global:LASTEXITCODE = 0
-            gh release create snapshot "dist/cpa-codex-auth-windows-amd64.exe" --verify-tag --title "Snapshot" --notes "Automated snapshot build from main at ${{ github.sha }}." --prerelease
-          }
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: snapshot
+          name: Snapshot $$-${{ github.run_id }}
+          prerelease: true
+          body: Automated snapshot build from main at ${{ github.sha }}.
+          files: dist/cpa-codex-auth-windows-amd64.exe
