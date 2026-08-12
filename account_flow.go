@@ -9,6 +9,23 @@ import (
 	"openai-tool/cpa-codex-auth/internal/client"
 )
 
+type postAccountSetupOperations struct {
+	authenticateFinal func() (tokenResult, error)
+	save              func(tokenResult) error
+}
+
+func finalizeCodexAuthentication(firstToken tokenResult, rotate bool, operations postAccountSetupOperations) error {
+	token := firstToken
+	if rotate {
+		finalToken, err := operations.authenticateFinal()
+		if err != nil {
+			return fmt.Errorf("final Codex OAuth: %w", err)
+		}
+		token = finalToken
+	}
+	return operations.save(token)
+}
+
 func runAuthentication(ctx context.Context, credentials startupCredentials, prompt *prompter) error {
 	if credentials.email == "" {
 		return fmt.Errorf("email is required")
@@ -60,23 +77,27 @@ func runAuthentication(ctx context.Context, credentials startupCredentials, prom
 		}
 	}
 
-	finalClient, err := client.New(prompt.proxy)
-	if err != nil {
-		return fmt.Errorf("create final OAuth client: %w", err)
-	}
-	finalToken, _, _, err := authenticate(ctx, finalClient, credentials.email, password, totpSecret, prompt)
-	if err != nil {
-		return fmt.Errorf("final Codex OAuth: %w", err)
-	}
-	if finalToken.Email == "" {
-		finalToken.Email = credentials.email
-	}
-	path, err := saveCredential(prompt.outputDirectory, finalToken)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(prompt.output, "CPA credential saved: %s\n", path)
-	return err
+	return finalizeCodexAuthentication(firstToken, credentials.rotate, postAccountSetupOperations{
+		authenticateFinal: func() (tokenResult, error) {
+			finalClient, clientErr := client.New(prompt.proxy)
+			if clientErr != nil {
+				return tokenResult{}, fmt.Errorf("create final OAuth client: %w", clientErr)
+			}
+			finalToken, _, _, authErr := authenticate(ctx, finalClient, credentials.email, password, totpSecret, prompt)
+			return finalToken, authErr
+		},
+		save: func(token tokenResult) error {
+			if token.Email == "" {
+				token.Email = credentials.email
+			}
+			path, saveErr := saveCredential(prompt.outputDirectory, token)
+			if saveErr != nil {
+				return saveErr
+			}
+			_, outputErr := fmt.Fprintf(prompt.output, "CPA credential saved: %s\n", path)
+			return outputErr
+		},
+	})
 }
 
 func authenticate(ctx context.Context, c *client.Client, email, password, totpSecret string, prompt *prompter) (tokenResult, string, string, error) {
