@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -62,6 +63,20 @@ func (factors *mfaFactors) UnmarshalJSON(data []byte) error {
 	}
 	list = make([]mfaFactor, 0, len(keyed))
 	for factorType, raw := range keyed {
+		if bytes.HasPrefix(bytes.TrimSpace(raw), []byte{'['}) {
+			var factors []mfaFactor
+			if err := json.Unmarshal(raw, &factors); err != nil {
+				return fmt.Errorf("decode MFA factor %q: %w", factorType, err)
+			}
+			for index := range factors {
+				if factors[index].Type == "" {
+					factors[index].Type = factorType
+				}
+			}
+			list = append(list, factors...)
+			continue
+		}
+
 		var factor mfaFactor
 		if err := json.Unmarshal(raw, &factor); err != nil {
 			return fmt.Errorf("decode MFA factor %q: %w", factorType, err)

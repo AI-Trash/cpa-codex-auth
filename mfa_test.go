@@ -55,3 +55,30 @@ func TestMFAInfoDecode_whenFactorsIsObject(t *testing.T) {
 		t.Fatalf("authenticatorFactorID = %q, want %q", factorID, "totp-factor")
 	}
 }
+
+func TestMFAInfoDecode_whenKeyedFactorsContainArrays(t *testing.T) {
+	// Given: MFA metadata where each keyed factor type contains a list of factors.
+	payload := []byte(`{
+		"mfa_enabled": true,
+		"native_default_factor_id": "totp-factor",
+		"factors": {
+			"totp": [{"id": "totp-factor"}]
+		}
+	}`)
+
+	// When: MFA metadata is decoded at the API boundary.
+	var info mfaInfo
+	err := json.Unmarshal(payload, &info)
+
+	// Then: the keyed factor arrays are normalized and the TOTP factor is selectable.
+	if err != nil {
+		t.Fatalf("decode MFA info with keyed factor arrays: %v", err)
+	}
+	factorID, err := info.authenticatorFactorID()
+	if err != nil {
+		t.Fatalf("authenticatorFactorID returned error: %v", err)
+	}
+	if factorID != "totp-factor" {
+		t.Fatalf("authenticatorFactorID = %q, want %q", factorID, "totp-factor")
+	}
+}
