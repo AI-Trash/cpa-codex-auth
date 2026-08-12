@@ -35,16 +35,44 @@ func verifyTOTP(ctx context.Context, c *client.Client, factorID, secret string) 
 }
 
 type mfaInfo struct {
-	Enabled         bool        `json:"mfa_enabled"`
-	EnabledV2       bool        `json:"mfa_enabled_v2"`
-	DefaultFactorID string      `json:"native_default_factor_id"`
-	Factors         []mfaFactor `json:"factors"`
+	Enabled         bool       `json:"mfa_enabled"`
+	EnabledV2       bool       `json:"mfa_enabled_v2"`
+	DefaultFactorID string     `json:"native_default_factor_id"`
+	Factors         mfaFactors `json:"factors"`
 }
+
+type mfaFactors []mfaFactor
 
 type mfaFactor struct {
 	ID         string `json:"id"`
 	Type       string `json:"type"`
 	FactorType string `json:"factor_type"`
+}
+
+func (factors *mfaFactors) UnmarshalJSON(data []byte) error {
+	var list []mfaFactor
+	if err := json.Unmarshal(data, &list); err == nil {
+		*factors = list
+		return nil
+	}
+
+	var keyed map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keyed); err != nil {
+		return fmt.Errorf("decode MFA factors: %w", err)
+	}
+	list = make([]mfaFactor, 0, len(keyed))
+	for factorType, raw := range keyed {
+		var factor mfaFactor
+		if err := json.Unmarshal(raw, &factor); err != nil {
+			return fmt.Errorf("decode MFA factor %q: %w", factorType, err)
+		}
+		if factor.Type == "" {
+			factor.Type = factorType
+		}
+		list = append(list, factor)
+	}
+	*factors = list
+	return nil
 }
 
 type mfaSession struct {
@@ -58,12 +86,12 @@ func (info mfaInfo) isEnabled() bool {
 
 func (info mfaInfo) authenticatorFactorID() (string, error) {
 	for _, factor := range info.Factors {
-		if factor.ID == info.DefaultFactorID && factor.isAuthenticator() {
+		if factor.ID == info.DefaultFactorID && factor.isAuthenticatorType() {
 			return factor.ID, nil
 		}
 	}
 	for _, factor := range info.Factors {
-		if factor.isAuthenticator() {
+		if factor.ID != "" && factor.isAuthenticatorType() {
 			return factor.ID, nil
 		}
 	}
@@ -73,12 +101,12 @@ func (info mfaInfo) authenticatorFactorID() (string, error) {
 	return "", fmt.Errorf("MFA metadata has no authenticator factor")
 }
 
-func (factor mfaFactor) isAuthenticator() bool {
+func (factor mfaFactor) isAuthenticatorType() bool {
 	factorType := strings.ToLower(factor.Type)
 	if factorType == "" {
 		factorType = strings.ToLower(factor.FactorType)
 	}
-	return factor.ID != "" && (factorType == "totp" || factorType == "authenticator" || factorType == "authenticator_app")
+	return factorType == "totp" || factorType == "authenticator" || factorType == "authenticator_app"
 }
 
 func getMFAInfo(ctx context.Context, c *client.Client, accessToken string) (mfaInfo, error) {
