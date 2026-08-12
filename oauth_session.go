@@ -20,29 +20,76 @@ type oauthSession struct {
 	deviceID string
 }
 
+type oauthInitializationResult struct {
+	statusCode int
+}
+
+type oauthSessionOperations struct {
+	initializeHTTP  func() (oauthInitializationResult, error)
+	hasAuthSession  func() bool
+	fallbackBrowser func() error
+}
+
 func initializeOAuthSession(c *client.Client) (oauthSession, error) {
 	start, err := openai.GenerateOAuthURL()
 	if err != nil {
 		return oauthSession{}, fmt.Errorf("generate OAuth URL: %w", err)
 	}
 	deviceID := ensureDeviceID(c)
-	current := start.AuthURL
+	if err := establishOAuthSession(oauthSessionOperations{
+		initializeHTTP: func() (oauthInitializationResult, error) {
+			return initializeOAuthSessionHTTP(c, start.AuthURL)
+		},
+		hasAuthSession: func() bool {
+			return c.GetCookieValue("oai-client-auth-session") != ""
+		},
+		fallbackBrowser: func() error {
+			return initializeOAuthSessionBrowser(c, start.AuthURL, deviceID)
+		},
+	}); err != nil {
+		return oauthSession{}, fmt.Errorf("establish OAuth session: %w", err)
+	}
+	return oauthSession{start: start, deviceID: deviceID}, nil
+}
+
+func establishOAuthSession(operations oauthSessionOperations) error {
+	result, httpErr := operations.initializeHTTP()
+	if operations.hasAuthSession() {
+		return nil
+	}
+	if err := operations.fallbackBrowser(); err != nil {
+		if httpErr != nil {
+			return fmt.Errorf("initialize OAuth session in browser after HTTP error: %w", err)
+		}
+		return fmt.Errorf("initialize OAuth session in browser after HTTP status %d: %w", result.statusCode, err)
+	}
+	if !operations.hasAuthSession() {
+		return fmt.Errorf("OAuth browser initialization completed without oai-client-auth-session")
+	}
+	return nil
+}
+
+func initializeOAuthSessionHTTP(c *client.Client, authURL string) (oauthInitializationResult, error) {
+	result := oauthInitializationResult{}
+	current := authURL
 	for range 10 {
 		resp, requestErr := c.GetNoRedirect(current)
 		if requestErr != nil {
-			return oauthSession{}, fmt.Errorf("initialize OAuth: %w", requestErr)
+			return result, fmt.Errorf("initialize OAuth: %w", requestErr)
 		}
+		result.statusCode = resp.StatusCode
 		location := resp.Header.Get("Location")
 		resp.Body.Close()
 		if resp.StatusCode < 300 || resp.StatusCode >= 400 || location == "" {
 			break
 		}
-		current, err = resolveLocation(current, location)
+		resolved, err := resolveLocation(current, location)
 		if err != nil {
-			return oauthSession{}, err
+			return result, err
 		}
+		current = resolved
 	}
-	return oauthSession{start: start, deviceID: deviceID}, nil
+	return result, nil
 }
 
 func ensureDeviceID(c *client.Client) string {
