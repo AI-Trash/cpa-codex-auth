@@ -24,4 +24,4 @@ The saved filename is stable (`codex-<email>-plus.json`), so running the command
 go build -o cpa-codex-auth.exe .
 ```
 
-Every push to `main` replaces the `snapshot` prerelease and its Windows amd64 executable. The `snapshot` tag always points to the commit used for the latest build.
+Every push to `main` uses GoReleaser to replace the `snapshot` prerelease with archives for Windows, macOS, and Linux on amd64 and arm64. The release also includes `checksums.txt`, and the `snapshot` tag always points to the commit used for the latest build.
