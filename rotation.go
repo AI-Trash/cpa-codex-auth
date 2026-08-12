@@ -26,52 +26,71 @@ type passwordReset struct {
 	prompt      *prompter
 }
 
+type credentialRotationRequest struct {
+	account     authenticatedAccount
+	info        mfaInfo
+	newPassword string
+}
+
+type credentialRotationOperations struct {
+	disableTOTP   func(context.Context, mfaSession, string) error
+	enrollTOTP    func(context.Context, *client.Client, string) (string, error)
+	resetPassword func(context.Context, passwordReset) error
+}
+
 func rotateCredentials(ctx context.Context, account authenticatedAccount) (string, string, error) {
 	info, err := getMFAInfo(ctx, account.client, account.accessToken)
 	if err != nil {
 		return "", "", err
 	}
-	if info.isEnabled() {
-		factorID, factorErr := info.authenticatorFactorID()
-		if factorErr != nil {
-			return "", "", factorErr
-		}
-		if err := disableTOTP(ctx, mfaSession{client: account.client, accessToken: account.accessToken}, factorID); err != nil {
-			return "", "", err
-		}
-	}
-
 	newPassword, err := generatePassword()
 	if err != nil {
 		return "", "", err
 	}
-	if err := resetAccountPassword(ctx, passwordReset{client: account.client, email: account.email, newPassword: newPassword, prompt: account.prompt}); err != nil {
+	newTOTPSecret, err := executeCredentialRotation(ctx, credentialRotationRequest{
+		account:     account,
+		info:        info,
+		newPassword: newPassword,
+	}, credentialRotationOperations{
+		disableTOTP:   disableTOTP,
+		enrollTOTP:    enrollTOTP,
+		resetPassword: resetAccountPassword,
+	})
+	if err != nil {
 		return "", "", err
 	}
 	if _, err := fmt.Fprintf(account.prompt.output, "Generated password: %s\n", newPassword); err != nil {
 		return "", "", fmt.Errorf("print generated password: %w", err)
 	}
-
-	loginClient, err := client.New(account.prompt.proxy)
-	if err != nil {
-		return "", "", fmt.Errorf("create post-rotation client: %w", err)
-	}
-	loginToken, _, _, err := authenticate(ctx, loginClient, account.email, newPassword, "", account.prompt)
-	if err != nil {
-		return "", "", fmt.Errorf("login after password rotation: %w", err)
-	}
-	accessToken, err := getChatGPTAccessToken(ctx, loginClient, loginToken.AccessToken)
-	if err != nil {
-		return "", "", err
-	}
-	newTOTPSecret, err := enrollTOTP(ctx, loginClient, accessToken)
-	if err != nil {
-		return "", "", err
-	}
-	if _, err := fmt.Fprintf(account.prompt.output, "Generated TOTP secret: %s\n", newTOTPSecret); err != nil {
-		return "", "", fmt.Errorf("print generated TOTP secret: %w", err)
-	}
 	return newPassword, newTOTPSecret, nil
+}
+
+func executeCredentialRotation(ctx context.Context, request credentialRotationRequest, operations credentialRotationOperations) (string, error) {
+	if request.info.isEnabled() {
+		factorID, err := request.info.authenticatorFactorID()
+		if err != nil {
+			return "", err
+		}
+		if err := operations.disableTOTP(ctx, mfaSession{client: request.account.client, accessToken: request.account.accessToken}, factorID); err != nil {
+			return "", err
+		}
+	}
+	newTOTPSecret, err := operations.enrollTOTP(ctx, request.account.client, request.account.accessToken)
+	if err != nil {
+		return "", err
+	}
+	if _, err := fmt.Fprintf(request.account.prompt.output, "Generated TOTP secret: %s\n", newTOTPSecret); err != nil {
+		return "", fmt.Errorf("print generated TOTP secret: %w", err)
+	}
+	if err := operations.resetPassword(ctx, passwordReset{
+		client:      request.account.client,
+		email:       request.account.email,
+		newPassword: request.newPassword,
+		prompt:      request.account.prompt,
+	}); err != nil {
+		return "", err
+	}
+	return newTOTPSecret, nil
 }
 
 func resetAccountPassword(ctx context.Context, reset passwordReset) error {
