@@ -24,4 +24,4 @@ The saved filename is stable (`codex-<email>-plus.json`), so running the command
 go build -o cpa-codex-auth.exe .
 ```
 
-Pushing a tag matching `v*` runs the Release workflow and publishes a Windows amd64 executable to GitHub Releases.
+Every push to `main` replaces the `snapshot` prerelease and its Windows amd64 executable. The `snapshot` tag always points to the commit used for the latest build.

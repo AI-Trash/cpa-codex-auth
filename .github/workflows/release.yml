@@ -1,9 +1,13 @@
-name: Release
+name: Snapshot
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+
+concurrency:
+  group: snapshot-release
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -33,7 +37,20 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist
           go build -trimpath -ldflags "-s -w" -o dist/cpa-codex-auth-windows-amd64.exe .
 
-      - name: Publish GitHub Release
+      - name: Replace snapshot release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" "dist/cpa-codex-auth-windows-amd64.exe" --verify-tag --generate-notes --title "${{ github.ref_name }}"
+        run: |
+          gh api "repos/${{ github.repository }}/git/refs/tags/snapshot" --method PATCH --field sha="${{ github.sha }}" --raw-field force=true 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            $global:LASTEXITCODE = 0
+            gh api "repos/${{ github.repository }}/git/refs" --method POST --field ref="refs/tags/snapshot" --field sha="${{ github.sha }}"
+          }
+          gh release view snapshot 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit snapshot --target "${{ github.sha }}" --title "Snapshot" --notes "Automated snapshot build from main at ${{ github.sha }}." --prerelease
+            gh release upload snapshot "dist/cpa-codex-auth-windows-amd64.exe" --clobber
+          } else {
+            $global:LASTEXITCODE = 0
+            gh release create snapshot "dist/cpa-codex-auth-windows-amd64.exe" --verify-tag --title "Snapshot" --notes "Automated snapshot build from main at ${{ github.sha }}." --prerelease
+          }
