@@ -13,11 +13,12 @@ permissions:
   contents: write
 
 jobs:
-  windows-amd64:
-    runs-on: windows-latest
+  release:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-go@v7
@@ -28,14 +29,15 @@ jobs:
       - name: Test
         run: go test -shuffle=on -count=1 ./...
 
-      - name: Build Windows executable
+      - name: Build release artifacts
+        uses: goreleaser/goreleaser-action@v6
         env:
-          CGO_ENABLED: "0"
-          GOOS: windows
-          GOARCH: amd64
-        run: |
-          New-Item -ItemType Directory -Force -Path dist
-          go build -trimpath -ldflags "-s -w" -o dist/cpa-codex-auth-windows-amd64.exe .
+          GORELEASER_CURRENT_TAG: v0.0.0-snapshot
+          GORELEASER_PREVIOUS_TAG: v0.0.0
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
 
       - name: Update Snapshot Release
         uses: andelf/nightly-release@main
@@ -46,4 +48,7 @@ jobs:
           name: Snapshot $$-${{ github.run_id }}
           prerelease: true
           body: Automated snapshot build from main at ${{ github.sha }}.
-          files: dist/cpa-codex-auth-windows-amd64.exe
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
