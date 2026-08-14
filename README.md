@@ -13,6 +13,9 @@ Configure an OpenAI account, complete Codex OAuth, and save an add-or-replace CP
 Additional flags:
 
 - `--proxy`: HTTP or SOCKS proxy URL used by authentication and the headless Sentinel fallback.
+- `--email`, `-e`: OpenAI account email address.
+- `--password`, `-p`: OpenAI account password.
+- `--totpsecret`, `-t`: OpenAI account TOTP secret.
 - `--output`, `-o`: credential output directory. Defaults to the current directory.
 - `--rotate`: disable the current authenticator, reset the password through email OTP, enroll a new TOTP secret, print both generated values, and finish OAuth with them.
 
