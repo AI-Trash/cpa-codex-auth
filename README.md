@@ -17,7 +17,7 @@ Additional flags:
 - `--password`, `-p`: OpenAI account password.
 - `--totpsecret`, `-t`: OpenAI account TOTP secret.
 - `--output`, `-o`: credential output directory. Defaults to the current directory.
-- `--rotate`: disable the current authenticator, reset the password through email OTP, enroll a new TOTP secret, print both generated values, and finish OAuth with them.
+- `--rotate`, `-r`: comma-separated list containing `totp` and/or `password`. Only the selected credentials are rotated; when both are selected, TOTP is always rotated before the password. Finish OAuth with the resulting credentials.
 
 The saved filename is stable (`codex-<email>-plus.json`), so running the command again replaces the existing CPA credential atomically.
 
