@@ -16,8 +16,13 @@ import (
 )
 
 type oauthSession struct {
-	start    *openai.OAuthStart
-	deviceID string
+	client        *client.Client
+	start         *openai.OAuthStart
+	deviceID      string
+	browser       oauthBrowser
+	browserActive bool
+	newBrowser    oauthBrowserFactory
+	exchange      func(oauthTokenExchangeRequest) (tokenResult, error)
 }
 
 type oauthInitializationResult struct {
@@ -30,12 +35,25 @@ type oauthSessionOperations struct {
 	fallbackBrowser func() error
 }
 
-func initializeOAuthSession(c *client.Client) (oauthSession, error) {
+func initializeOAuthSession(ctx context.Context, c *client.Client) (*oauthSession, error) {
 	start, err := openai.GenerateOAuthURL()
 	if err != nil {
-		return oauthSession{}, fmt.Errorf("generate OAuth URL: %w", err)
+		return nil, fmt.Errorf("generate OAuth URL: %w", err)
 	}
 	deviceID := ensureDeviceID(c)
+	session := &oauthSession{
+		client:   c,
+		start:    start,
+		deviceID: deviceID,
+		exchange: func(request oauthTokenExchangeRequest) (tokenResult, error) {
+			token, exchangeErr := openai.ExchangeCodeForToken(c, request.Code, request.CodeVerifier, request.RedirectURI)
+			if exchangeErr != nil {
+				return tokenResult{}, exchangeErr
+			}
+			return convertToken(token)
+		},
+	}
+	c.SetAuthTransport(session)
 	if err := establishOAuthSession(oauthSessionOperations{
 		initializeHTTP: func() (oauthInitializationResult, error) {
 			return initializeOAuthSessionHTTP(c, start.AuthURL)
@@ -44,12 +62,13 @@ func initializeOAuthSession(c *client.Client) (oauthSession, error) {
 			return c.GetCookieValue("oai-client-auth-session") != ""
 		},
 		fallbackBrowser: func() error {
-			return initializeOAuthSessionBrowser(c, start.AuthURL, deviceID)
+			return session.ensureBrowser(ctx)
 		},
 	}); err != nil {
-		return oauthSession{}, fmt.Errorf("establish OAuth session: %w", err)
+		session.Close()
+		return nil, fmt.Errorf("establish OAuth session: %w", err)
 	}
-	return oauthSession{start: start, deviceID: deviceID}, nil
+	return session, nil
 }
 
 func establishOAuthSession(operations oauthSessionOperations) error {
@@ -101,8 +120,8 @@ func ensureDeviceID(c *client.Client) string {
 	return deviceID
 }
 
-func completeOAuth(ctx context.Context, c *client.Client, session oauthSession) (tokenResult, error) {
-	workspaceID := extractWorkspaceID(c.GetCookieValue("oai-client-auth-session"))
+func completeOAuth(ctx context.Context, session *oauthSession) (tokenResult, error) {
+	workspaceID := extractWorkspaceID(session.client.GetCookieValue("oai-client-auth-session"))
 	if workspaceID == "" {
 		return tokenResult{}, fmt.Errorf("authenticated session has no workspace ID")
 	}
@@ -119,7 +138,7 @@ func completeOAuth(ctx context.Context, c *client.Client, session oauthSession) 
 	req.Header.Set("Origin", authBaseURL)
 	req.Header.Set("Referer", authBaseURL+"/sign-in-with-chatgpt/codex/consent")
 	req.Header.Set("User-Agent", client.UA)
-	resp, err := c.Do(req)
+	resp, err := session.client.Do(req)
 	if err != nil {
 		return tokenResult{}, fmt.Errorf("select workspace: %w", err)
 	}
@@ -133,15 +152,22 @@ func completeOAuth(ctx context.Context, c *client.Client, session oauthSession) 
 	if err := json.NewDecoder(resp.Body).Decode(&selection); err != nil {
 		return tokenResult{}, fmt.Errorf("decode workspace selection: %w", err)
 	}
-	return followOAuthRedirects(c, selection.ContinueURL, session.start)
+	return session.followOAuthRedirects(ctx, selection.ContinueURL)
 }
 
-func followOAuthRedirects(c *client.Client, start string, oauth *openai.OAuthStart) (tokenResult, error) {
+func (s *oauthSession) followOAuthRedirects(ctx context.Context, start string) (tokenResult, error) {
+	if s.browserActive {
+		return s.followBrowserRedirects(ctx, start)
+	}
 	current := start
 	for range 10 {
-		resp, err := c.GetNoRedirect(current)
+		resp, err := s.client.GetNoRedirect(current)
 		if err != nil {
 			return tokenResult{}, fmt.Errorf("follow OAuth redirect: %w", err)
+		}
+		if s.browserActive {
+			resp.Body.Close()
+			return s.followBrowserRedirects(ctx, current)
 		}
 		location := resp.Header.Get("Location")
 		resp.Body.Close()
@@ -157,18 +183,30 @@ func followOAuthRedirects(c *client.Client, start string, oauth *openai.OAuthSta
 			if parseErr != nil {
 				return tokenResult{}, fmt.Errorf("parse OAuth callback: %w", parseErr)
 			}
-			if callback.Query().Get("state") != oauth.State {
-				return tokenResult{}, fmt.Errorf("OAuth state mismatch")
-			}
-			token, exchangeErr := openai.ExchangeCodeForToken(c, callback.Query().Get("code"), oauth.CodeVerifier, oauth.RedirectURI)
-			if exchangeErr != nil {
-				return tokenResult{}, exchangeErr
-			}
-			return convertToken(token)
+			return s.exchangeCallback(callback.String())
 		}
 		current = resolved
 	}
 	return tokenResult{}, fmt.Errorf("OAuth redirects did not contain an authorization code")
+}
+
+func (s *oauthSession) followBrowserRedirects(ctx context.Context, start string) (tokenResult, error) {
+	callback, err := s.browser.FollowRedirects(ctx, oauthBrowserRedirectRequest{URL: start, RedirectURI: s.start.RedirectURI})
+	if err != nil {
+		return tokenResult{}, fmt.Errorf("follow OAuth redirects in browser: %w", err)
+	}
+	return s.exchangeCallback(callback)
+}
+
+func (s *oauthSession) exchangeCallback(callbackURL string) (tokenResult, error) {
+	code, state, err := openai.ExtractCallbackParams(callbackURL)
+	if err != nil {
+		return tokenResult{}, fmt.Errorf("parse OAuth callback: %w", err)
+	}
+	if state != s.start.State {
+		return tokenResult{}, fmt.Errorf("OAuth state mismatch")
+	}
+	return s.exchange(oauthTokenExchangeRequest{Code: code, State: state, CodeVerifier: s.start.CodeVerifier, RedirectURI: s.start.RedirectURI})
 }
 
 func convertToken(token *openai.TokenResult) (tokenResult, error) {

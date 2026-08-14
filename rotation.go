@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -36,7 +35,7 @@ type credentialRotationRequest struct {
 type credentialRotationOperations struct {
 	disableTOTP    func(context.Context, mfaSession, string) error
 	enrollTOTP     func(context.Context, *client.Client, string) (string, error)
-	refreshSession func(context.Context, string, string) (*client.Client, error)
+	refreshSession func(context.Context, string, string) (*authenticatedOAuth, error)
 	resetPassword  func(context.Context, passwordReset) error
 }
 
@@ -62,15 +61,16 @@ func rotateCredentials(ctx context.Context, account authenticatedAccount, target
 	newTOTPSecret, newPassword, err := executeCredentialRotation(ctx, request, targets, credentialRotationOperations{
 		disableTOTP: disableTOTP,
 		enrollTOTP:  enrollTOTP,
-		refreshSession: func(ctx context.Context, currentPassword, newTOTPSecret string) (*client.Client, error) {
+		refreshSession: func(ctx context.Context, currentPassword, newTOTPSecret string) (*authenticatedOAuth, error) {
 			refreshedClient, err := client.New(account.prompt.proxy)
 			if err != nil {
 				return nil, fmt.Errorf("create refreshed authentication client: %w", err)
 			}
-			if _, _, _, err := authenticate(ctx, refreshedClient, account.email, currentPassword, newTOTPSecret, account.prompt); err != nil {
+			refreshedAuthentication, err := authenticate(ctx, refreshedClient, account.email, currentPassword, newTOTPSecret, account.prompt)
+			if err != nil {
 				return nil, fmt.Errorf("refresh authentication session: %w", err)
 			}
-			return refreshedClient, nil
+			return refreshedAuthentication, nil
 		},
 		resetPassword: resetAccountPassword,
 	})
@@ -111,11 +111,12 @@ func executeCredentialRotation(ctx context.Context, request credentialRotationRe
 		return newTOTPSecret, "", nil
 	}
 	if targets&rotateTOTP != 0 {
-		refreshedClient, err := operations.refreshSession(ctx, request.currentPassword, newTOTPSecret)
+		refreshedAuthentication, err := operations.refreshSession(ctx, request.currentPassword, newTOTPSecret)
 		if err != nil {
 			return "", "", fmt.Errorf("refresh authentication session before password reset: %w", err)
 		}
-		request.account.client = refreshedClient
+		defer refreshedAuthentication.Close()
+		request.account.client = refreshedAuthentication.session.client
 	}
 	if err := operations.resetPassword(ctx, passwordReset{
 		client:      request.account.client,
@@ -148,12 +149,8 @@ func resetAccountPassword(ctx context.Context, reset passwordReset) error {
 		return fmt.Errorf("send password reset OTP: %w", err)
 	}
 	if resp.StatusCode != http.StatusAccepted {
-		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if readErr != nil {
-			return fmt.Errorf("send password reset OTP failed (%d) and response could not be read: %w", resp.StatusCode, readErr)
-		}
-		return fmt.Errorf("send password reset OTP failed (%d): %s", resp.StatusCode, string(body))
+		return fmt.Errorf("send password reset OTP failed: status %d", resp.StatusCode)
 	}
 	resp.Body.Close()
 
@@ -188,11 +185,7 @@ func resetAccountPassword(ctx context.Context, reset passwordReset) error {
 	}
 	defer resetResp.Body.Close()
 	if resetResp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resetResp.Body)
-		if readErr != nil {
-			return fmt.Errorf("reset password failed (%d) and response could not be read: %w", resetResp.StatusCode, readErr)
-		}
-		return fmt.Errorf("reset password failed (%d): %s", resetResp.StatusCode, string(body))
+		return fmt.Errorf("reset password failed: status %d", resetResp.StatusCode)
 	}
 	return nil
 }

@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"net/http"
 	"reflect"
 	"testing"
 
@@ -30,9 +32,9 @@ func TestExecuteCredentialRotation_enrollsTOTP_beforePasswordReset(t *testing.T)
 			calls = append(calls, "enroll")
 			return "new-totp", nil
 		},
-		refreshSession: func(context.Context, string, string) (*client.Client, error) {
+		refreshSession: func(context.Context, string, string) (*authenticatedOAuth, error) {
 			calls = append(calls, "refresh")
-			return &client.Client{}, nil
+			return &authenticatedOAuth{session: &oauthSession{client: &client.Client{}}}, nil
 		},
 		resetPassword: func(context.Context, passwordReset) error {
 			calls = append(calls, "reset")
@@ -79,13 +81,13 @@ func TestExecuteCredentialRotation_whenBothSelected_resetsWithRefreshedClient(t 
 			calls = append(calls, "enroll")
 			return "new-totp", nil
 		},
-		refreshSession: func(_ context.Context, password, totpSecret string) (*client.Client, error) {
+		refreshSession: func(_ context.Context, password, totpSecret string) (*authenticatedOAuth, error) {
 			calls = append(calls, "refresh")
 			if password != "current-password" || totpSecret != "new-totp" {
 				t.Fatalf("refresh inputs = (%q, %q), want (%q, %q)", password, totpSecret, "current-password", "new-totp")
 			}
 			refreshedClient = &client.Client{}
-			return refreshedClient, nil
+			return &authenticatedOAuth{session: &oauthSession{client: refreshedClient}}, nil
 		},
 		resetPassword: func(_ context.Context, reset passwordReset) error {
 			calls = append(calls, "reset")
@@ -106,6 +108,64 @@ func TestExecuteCredentialRotation_whenBothSelected_resetsWithRefreshedClient(t 
 	if !reflect.DeepEqual(calls, []string{"disable", "enroll", "refresh", "reset"}) {
 		t.Fatalf("rotation calls = %v, want [disable enroll refresh reset]", calls)
 	}
+}
+
+func TestExecuteCredentialRotation_closesRefreshedBrowser_whenPasswordResetFails(t *testing.T) {
+	// Given: a combined rotation whose refreshed authentication owns an active browser.
+	browser := &closeTrackingOAuthBrowser{}
+	refreshed := &authenticatedOAuth{session: &oauthSession{
+		client:  &client.Client{},
+		browser: browser,
+	}}
+	request := credentialRotationRequest{
+		account:     authenticatedAccount{prompt: &prompter{output: new(bytes.Buffer)}},
+		newPassword: "new-password",
+	}
+	resetErr := errors.New("password reset failed")
+	operations := credentialRotationOperations{
+		enrollTOTP: func(context.Context, *client.Client, string) (string, error) {
+			return "new-totp", nil
+		},
+		refreshSession: func(context.Context, string, string) (*authenticatedOAuth, error) {
+			return refreshed, nil
+		},
+		resetPassword: func(_ context.Context, reset passwordReset) error {
+			if reset.client != refreshed.session.client {
+				t.Fatalf("password reset client = %p, want refreshed client %p", reset.client, refreshed.session.client)
+			}
+			if browser.closeCalls != 0 {
+				t.Fatalf("browser close calls during password reset = %d, want 0", browser.closeCalls)
+			}
+			return resetErr
+		},
+	}
+
+	// When: the refreshed session performs the password reset.
+	_, _, err := executeCredentialRotation(context.Background(), request, rotateTOTP|rotatePassword, operations)
+
+	// Then: its browser stays attached through the reset and closes exactly afterward.
+	if !errors.Is(err, resetErr) {
+		t.Fatalf("executeCredentialRotation error = %v, want %v", err, resetErr)
+	}
+	if browser.closeCalls != 1 {
+		t.Fatalf("browser close calls after password reset = %d, want 1", browser.closeCalls)
+	}
+}
+
+type closeTrackingOAuthBrowser struct {
+	closeCalls int
+}
+
+func (*closeTrackingOAuthBrowser) Fetch(context.Context, oauthBrowserFetchRequest) (*http.Response, error) {
+	return nil, nil
+}
+
+func (*closeTrackingOAuthBrowser) FollowRedirects(context.Context, oauthBrowserRedirectRequest) (string, error) {
+	return "", nil
+}
+
+func (b *closeTrackingOAuthBrowser) Close() {
+	b.closeCalls++
 }
 
 func TestExecuteCredentialRotation_whenPasswordOnly_preservesTOTPAndSkipsMFA(t *testing.T) {

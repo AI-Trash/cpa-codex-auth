@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"openai-tool/cpa-codex-auth/internal/client"
 )
@@ -12,6 +11,17 @@ import (
 type postAccountSetupOperations struct {
 	authenticateFinal func() (tokenResult, error)
 	save              func(tokenResult) error
+}
+
+type authenticatedOAuth struct {
+	session    *oauthSession
+	token      tokenResult
+	password   string
+	totpSecret string
+}
+
+func (result *authenticatedOAuth) Close() {
+	result.session.Close()
 }
 
 func finalizeCodexAuthentication(firstToken tokenResult, rotate rotationTargets, operations postAccountSetupOperations) error {
@@ -36,10 +46,19 @@ func runAuthentication(ctx context.Context, credentials startupCredentials, prom
 	}
 	password := credentials.password
 	totpSecret := credentials.totpSecret
-	firstToken, password, totpSecret, err := authenticate(ctx, firstClient, credentials.email, password, totpSecret, prompt)
+	firstAuthentication, err := authenticate(ctx, firstClient, credentials.email, password, totpSecret, prompt)
 	if err != nil {
 		return err
 	}
+	firstAuthenticationOpen := true
+	defer func() {
+		if firstAuthenticationOpen {
+			firstAuthentication.Close()
+		}
+	}()
+	firstToken := firstAuthentication.token
+	password = firstAuthentication.password
+	totpSecret = firstAuthentication.totpSecret
 	accessToken, err := getChatGPTAccessToken(ctx, firstClient, firstToken.AccessToken)
 	if err != nil {
 		return err
@@ -76,6 +95,8 @@ func runAuthentication(ctx context.Context, credentials startupCredentials, prom
 			}
 		}
 	}
+	firstAuthentication.Close()
+	firstAuthenticationOpen = false
 
 	return finalizeCodexAuthentication(firstToken, credentials.rotate, postAccountSetupOperations{
 		authenticateFinal: func() (tokenResult, error) {
@@ -83,8 +104,12 @@ func runAuthentication(ctx context.Context, credentials startupCredentials, prom
 			if clientErr != nil {
 				return tokenResult{}, fmt.Errorf("create final OAuth client: %w", clientErr)
 			}
-			finalToken, _, _, authErr := authenticate(ctx, finalClient, credentials.email, password, totpSecret, prompt)
-			return finalToken, authErr
+			finalAuthentication, authErr := authenticate(ctx, finalClient, credentials.email, password, totpSecret, prompt)
+			if authErr != nil {
+				return tokenResult{}, authErr
+			}
+			defer finalAuthentication.Close()
+			return finalAuthentication.token, nil
 		},
 		save: func(token tokenResult) error {
 			if token.Email == "" {
@@ -95,88 +120,44 @@ func runAuthentication(ctx context.Context, credentials startupCredentials, prom
 				return saveErr
 			}
 			_, outputErr := fmt.Fprintf(prompt.output, "CPA credential saved: %s\n", path)
-			return outputErr
+			if outputErr != nil {
+				return outputErr
+			}
+			if err := saveFinalCredentialLog(credentialLogRequest{
+				Token:      token,
+				Password:   password,
+				TOTPSecret: totpSecret,
+				Enabled:    credentials.credentialLogEnabled,
+			}); err != nil {
+				return err
+			}
+			return nil
 		},
 	})
 }
 
-func authenticate(ctx context.Context, c *client.Client, email, password, totpSecret string, prompt *prompter) (tokenResult, string, string, error) {
-	session, err := initializeOAuthSession(c)
+func authenticate(ctx context.Context, c *client.Client, email, password, totpSecret string, prompt *prompter) (*authenticatedOAuth, error) {
+	session, err := initializeOAuthSession(ctx, c)
 	if err != nil {
-		return tokenResult{}, password, totpSecret, err
+		return nil, err
 	}
-	response, err := submitEmail(ctx, c, session.deviceID, email)
+	token, authenticatedPassword, authenticatedTOTPSecret, err := authenticateSession(ctx, authenticationRequest{
+		Session:    session,
+		Email:      email,
+		Password:   password,
+		TOTPSecret: totpSecret,
+		Prompt:     prompt,
+	}, defaultAuthenticationOperations())
 	if err != nil {
-		return tokenResult{}, password, totpSecret, err
+		session.Close()
+		return nil, err
 	}
-	for step := 0; step < 20; step++ {
-		state := authState(response)
-		if isOAuthCompletionState(state) {
-			token, completeErr := completeOAuth(ctx, c, session)
-			return token, password, totpSecret, completeErr
-		}
-		switch state {
-		case "login_password":
-			if password == "" {
-				password, err = prompt.askRequired("Password: ")
-				if err != nil {
-					return tokenResult{}, password, totpSecret, err
-				}
-			}
-			response, err = verifyPassword(ctx, c, session.deviceID, password)
-		case "create_account_password", "username_password_create":
-			if password == "" {
-				password, err = generatePassword()
-				if err == nil {
-					_, err = fmt.Fprintf(prompt.output, "Generated password: %s\n", password)
-				}
-				if err != nil {
-					return tokenResult{}, password, totpSecret, err
-				}
-			}
-			response, err = createPassword(ctx, c, session.deviceID, email, password)
-			if err != nil {
-				response, err = fetchAuthState(ctx, c, authBaseURL+"/create-account/password")
-			}
-		case "email_otp_send", "email_otp_verification":
-			response, err = handleEmailVerification(ctx, c, session.deviceID, email, prompt)
-		case "about_you":
-			response, err = createProfile(ctx, c, session.deviceID)
-		case "add_phone", "phone_channel", "phone_verification":
-			response, err = handlePhoneVerification(ctx, c, prompt)
-		case "mfa_challenge":
-			if totpSecret == "" {
-				totpSecret, err = prompt.askRequired("TOTP secret: ")
-				if err != nil {
-					return tokenResult{}, password, totpSecret, err
-				}
-			}
-			factorID := response.Page.Payload.FactorID
-			if factorID == "" {
-				return tokenResult{}, password, totpSecret, fmt.Errorf("MFA challenge has no factor ID")
-			}
-			response, err = verifyTOTP(ctx, c, factorID, totpSecret)
-		default:
-			if strings.HasPrefix(state, "error:") {
-				return tokenResult{}, password, totpSecret, fmt.Errorf("OpenAI authentication state %s: %s", state, response.Error.Message)
-			}
-			return tokenResult{}, password, totpSecret, fmt.Errorf("unsupported OpenAI authentication state: %s", state)
-		}
-		if err != nil {
-			return tokenResult{}, password, totpSecret, err
-		}
-		if isOAuthCompletionState(authState(response)) {
-			response, err = fetchAuthState(ctx, c, authBaseURL+"/")
-			if err != nil {
-				return tokenResult{}, password, totpSecret, err
-			}
-			if isOAuthCompletionState(authState(response)) {
-				token, completeErr := completeOAuth(ctx, c, session)
-				return token, password, totpSecret, completeErr
-			}
-		}
-	}
-	return tokenResult{}, password, totpSecret, fmt.Errorf("authentication exceeded maximum state transitions")
+	return &authenticatedOAuth{
+		session:    session,
+		token:      token,
+		password:   authenticatedPassword,
+		totpSecret: authenticatedTOTPSecret,
+	}, nil
 }
 
 func isOAuthCompletionState(state string) bool {
