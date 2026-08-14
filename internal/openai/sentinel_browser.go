@@ -20,6 +20,21 @@ type sentinelBrowserRequest struct {
 	proxyURL string
 }
 
+func sentinelBrowserScript(body string) (string, error) {
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("encode sentinel browser request: %w", err)
+	}
+	return fmt.Sprintf(`(() => {
+			const request = new XMLHttpRequest();
+			request.open('POST', '/backend-api/sentinel/req', false);
+			request.setRequestHeader('Content-Type', 'text/plain;charset=UTF-8');
+			request.send(%s);
+			if (request.status !== 200) throw new Error('HTTP ' + request.status);
+			return request.responseText;
+		})()`, bodyJSON), nil
+}
+
 func fetchSentinelChallengeHeadless(request sentinelBrowserRequest) ([]byte, error) {
 	executablePath, err := browser.Executable(request.proxyURL)
 	if err != nil {
@@ -50,18 +65,10 @@ func fetchSentinelChallengeHeadless(request sentinelBrowserRequest) ([]byte, err
 	ctx, cancelTimeout := context.WithTimeout(browserContext, 45*time.Second)
 	defer cancelTimeout()
 
-	bodyJSON, err := json.Marshal(request.body)
+	script, err := sentinelBrowserScript(request.body)
 	if err != nil {
-		return nil, fmt.Errorf("encode sentinel browser request: %w", err)
+		return nil, err
 	}
-	script := fmt.Sprintf(`(() => {
-		const request = new XMLHttpRequest();
-		request.open('POST', '/backend-api/sentinel/req', false);
-		request.setRequestHeader('Content-Type', 'text/plain;charset=UTF-8');
-		request.send(%s);
-		if (request.status !== 200) throw new Error('HTTP ' + request.status + ': ' + request.responseText);
-		return request.responseText;
-	})()`, bodyJSON)
 
 	var result string
 	if err := chromedp.Run(ctx,
