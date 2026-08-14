@@ -73,7 +73,7 @@ func fetchSentinelChallenge(httpFetch func() (int, []byte, error), browserFetch 
 		return body, nil
 	}
 	if err == nil && status != http.StatusForbidden {
-		return nil, fmt.Errorf("sentinel challenge: %d %s", status, string(body))
+		return nil, fmt.Errorf("sentinel challenge: status %d", status)
 	}
 	browserBody, browserErr := browserFetch()
 	if browserErr != nil {

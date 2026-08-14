@@ -3,6 +3,7 @@ package openai
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -55,5 +56,24 @@ func TestFetchSentinelChallenge_whenHTTPWorks_skipsHeadlessBrowser(t *testing.T)
 	}
 	if browserCalls != 0 {
 		t.Fatalf("browser calls = %d, want 0", browserCalls)
+	}
+}
+
+func TestFetchSentinelChallenge_whenHTMLFails_doesNotExposeTheDocument(t *testing.T) {
+	// Given: a non-retriable HTML response from the Sentinel endpoint.
+	html := "<html>Cloudflare challenge document</html>"
+	httpFetch := func() (int, []byte, error) {
+		return http.StatusBadGateway, []byte(html), nil
+	}
+
+	// When: the Sentinel request fails.
+	_, err := fetchSentinelChallenge(httpFetch, func() ([]byte, error) { return nil, errors.New("browser should not run") })
+
+	// Then: the bounded diagnostic identifies the status without returning server HTML.
+	if err == nil {
+		t.Fatal("fetchSentinelChallenge unexpectedly succeeded")
+	}
+	if strings.Contains(err.Error(), html) || strings.Contains(strings.ToLower(err.Error()), "<html") {
+		t.Fatalf("error exposed HTML: %v", err)
 	}
 }
