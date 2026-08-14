@@ -91,7 +91,7 @@ func postAuthJSON(ctx context.Context, c *client.Client, path string, body []byt
 		return authResponse{}, fmt.Errorf("read auth response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return authResponse{}, fmt.Errorf("auth request %s failed (%d): %s", path, resp.StatusCode, string(responseBody))
+		return authResponse{}, fmt.Errorf("auth request %s failed: status %d", path, resp.StatusCode)
 	}
 	var result authResponse
 	if err := json.Unmarshal(responseBody, &result); err != nil {
