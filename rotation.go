@@ -94,28 +94,34 @@ func executeCredentialRotation(ctx context.Context, request credentialRotationRe
 }
 
 func resetAccountPassword(ctx context.Context, reset passwordReset) error {
+	deviceID := reset.client.GetCookieValue("oai-did")
+	sentinel, _, err := openai.BuildFullSentinelToken(reset.client, deviceID, "authorize_continue")
+	if err != nil {
+		return fmt.Errorf("create password reset sentinel: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, authBaseURL+"/api/accounts/password/send-otp", nil)
 	if err != nil {
 		return fmt.Errorf("build password reset OTP request: %w", err)
 	}
 	setAuthMutationHeaders(req, authBaseURL+"/reset-password")
+	req.Header.Set("openai-sentinel-token", sentinel)
 	resp, err := reset.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("send password reset OTP: %w", err)
 	}
-	resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("send password reset OTP failed: status %d", resp.StatusCode)
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("send password reset OTP failed (%d) and response could not be read: %w", resp.StatusCode, readErr)
+		}
+		return fmt.Errorf("send password reset OTP failed (%d): %s", resp.StatusCode, string(body))
 	}
+	resp.Body.Close()
 
 	code, err := reset.prompt.askRequired("Password reset code for " + reset.email + ": ")
 	if err != nil {
 		return err
-	}
-	deviceID := reset.client.GetCookieValue("oai-did")
-	sentinel, _, err := openai.BuildFullSentinelToken(reset.client, deviceID, "authorize_continue")
-	if err != nil {
-		return fmt.Errorf("create password reset sentinel: %w", err)
 	}
 	codeBody, err := json.Marshal(map[string]string{"code": code})
 	if err != nil {
