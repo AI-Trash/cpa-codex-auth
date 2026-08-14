@@ -6,8 +6,6 @@ import (
 	"io"
 	"maps"
 	"net/http"
-	"net/url"
-	"strings"
 	"sync"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -19,10 +17,11 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 
 // Client wraps tls-client with manual cookie management.
 type Client struct {
-	tls      tls_client.HttpClient
-	cookies  map[string]map[string]string // domain -> name -> value
-	proxyURL string
-	mu       sync.Mutex
+	tls           tls_client.HttpClient
+	cookies       map[string]map[string]Cookie
+	proxyURL      string
+	authTransport AuthTransport
+	mu            sync.Mutex
 }
 
 func New(proxyURL string) (*Client, error) {
@@ -40,109 +39,17 @@ func New(proxyURL string) (*Client, error) {
 	}
 	return &Client{
 		tls:      t,
-		cookies:  make(map[string]map[string]string),
+		cookies:  make(map[string]map[string]Cookie),
 		proxyURL: proxyURL,
 	}, nil
 }
 
-func (c *Client) ProxyURL() string {
-	return c.proxyURL
-}
+func (c *Client) ProxyURL() string { return c.proxyURL }
 
-// storeCookies extracts Set-Cookie headers and stores them.
-func (c *Client) storeCookies(reqURL string, resp *fhttp.Response) {
+func (c *Client) SetAuthTransport(transport AuthTransport) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.storeCookiesLocked(reqURL, resp)
-}
-
-// storeCookiesLocked is storeCookies without locking; the caller already holds c.mu.
-func (c *Client) storeCookiesLocked(reqURL string, resp *fhttp.Response) {
-	u, _ := url.Parse(reqURL)
-	if u == nil {
-		return
-	}
-
-	for _, sc := range resp.Header.Values("Set-Cookie") {
-		parts := strings.Split(sc, ";")
-		if len(parts) == 0 {
-			continue
-		}
-		kv := strings.SplitN(strings.TrimSpace(parts[0]), "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		name, value := kv[0], kv[1]
-
-		// Determine domain from Set-Cookie or use request host
-		domain := u.Hostname()
-		for _, attr := range parts[1:] {
-			a := strings.TrimSpace(attr)
-			if d, ok := strings.CutPrefix(strings.ToLower(a), "domain="); ok {
-				d = strings.TrimPrefix(d, ".")
-				if d != "" {
-					domain = d
-				}
-			}
-		}
-
-		if c.cookies[domain] == nil {
-			c.cookies[domain] = make(map[string]string)
-		}
-		c.cookies[domain][name] = value
-	}
-}
-
-// cookieHeader builds the Cookie header for a given URL.
-func (c *Client) cookieHeader(rawURL string) string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.cookieHeaderLocked(rawURL)
-}
-
-// cookieHeaderLocked is cookieHeader without locking; caller holds c.mu.
-func (c *Client) cookieHeaderLocked(rawURL string) string {
-	u, _ := url.Parse(rawURL)
-	if u == nil {
-		return ""
-	}
-	host := u.Hostname()
-
-	var pairs []string
-	for domain, cookies := range c.cookies {
-		if host == domain || strings.HasSuffix(host, "."+domain) {
-			for name, value := range cookies {
-				pairs = append(pairs, name+"="+value)
-			}
-		}
-	}
-	return strings.Join(pairs, "; ")
-}
-
-// GetCookieValue returns a specific cookie value.
-func (c *Client) GetCookieValue(name string) string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, cookies := range c.cookies {
-		if v, ok := cookies[name]; ok {
-			return v
-		}
-	}
-	return ""
-}
-
-func (c *Client) SetCookie(rawURL, name, value string) {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Hostname() == "" {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	domain := u.Hostname()
-	if c.cookies[domain] == nil {
-		c.cookies[domain] = make(map[string]string)
-	}
-	c.cookies[domain][name] = value
+	c.authTransport = transport
 }
 
 // exec runs a fhttp request, stores cookies, returns standard http.Response.
@@ -203,7 +110,7 @@ func (c *Client) exec(req *fhttp.Request, followRedirects bool) (*http.Response,
 }
 
 func (c *Client) GetNoRedirect(rawURL string) (*http.Response, error) {
-	req, err := fhttp.NewRequest("GET", rawURL, nil)
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build get request: %w", err)
 	}
@@ -219,7 +126,7 @@ func (c *Client) GetNoRedirect(rawURL string) (*http.Response, error) {
 	req.Header.Set("Sec-Fetch-Site", "none")
 	req.Header.Set("Sec-Fetch-User", "?1")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
-	return c.exec(req, false)
+	return c.DoNoRedirect(req)
 }
 
 func (c *Client) Do(stdReq *http.Request) (*http.Response, error) {
@@ -231,6 +138,16 @@ func (c *Client) DoNoRedirect(stdReq *http.Request) (*http.Response, error) {
 }
 
 func (c *Client) doStd(stdReq *http.Request, followRedirects bool) (*http.Response, error) {
+	c.mu.Lock()
+	transport := c.authTransport
+	c.mu.Unlock()
+	if transport != nil && stdReq.URL.Hostname() == "auth.openai.com" {
+		return transport.HandleAuthRequest(stdReq, followRedirects, c.doStdDirect)
+	}
+	return c.doStdDirect(stdReq, followRedirects)
+}
+
+func (c *Client) doStdDirect(stdReq *http.Request, followRedirects bool) (*http.Response, error) {
 	var buf []byte
 	if stdReq.Body != nil {
 		var err error
