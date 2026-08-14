@@ -27,20 +27,23 @@ type passwordReset struct {
 }
 
 type credentialRotationRequest struct {
-	account     authenticatedAccount
-	info        mfaInfo
-	newPassword string
+	account         authenticatedAccount
+	info            mfaInfo
+	currentPassword string
+	newPassword     string
 }
 
 type credentialRotationOperations struct {
-	disableTOTP   func(context.Context, mfaSession, string) error
-	enrollTOTP    func(context.Context, *client.Client, string) (string, error)
-	resetPassword func(context.Context, passwordReset) error
+	disableTOTP    func(context.Context, mfaSession, string) error
+	enrollTOTP     func(context.Context, *client.Client, string) (string, error)
+	refreshSession func(context.Context, string, string) (*client.Client, error)
+	resetPassword  func(context.Context, passwordReset) error
 }
 
 func rotateCredentials(ctx context.Context, account authenticatedAccount, targets rotationTargets, password, totpSecret string) (string, string, error) {
 	request := credentialRotationRequest{
-		account: account,
+		account:         account,
+		currentPassword: password,
 	}
 	if targets&rotateTOTP != 0 {
 		info, err := getMFAInfo(ctx, account.client, account.accessToken)
@@ -57,8 +60,18 @@ func rotateCredentials(ctx context.Context, account authenticatedAccount, target
 		request.newPassword = newPassword
 	}
 	newTOTPSecret, newPassword, err := executeCredentialRotation(ctx, request, targets, credentialRotationOperations{
-		disableTOTP:   disableTOTP,
-		enrollTOTP:    enrollTOTP,
+		disableTOTP: disableTOTP,
+		enrollTOTP:  enrollTOTP,
+		refreshSession: func(ctx context.Context, currentPassword, newTOTPSecret string) (*client.Client, error) {
+			refreshedClient, err := client.New(account.prompt.proxy)
+			if err != nil {
+				return nil, fmt.Errorf("create refreshed authentication client: %w", err)
+			}
+			if _, _, _, err := authenticate(ctx, refreshedClient, account.email, currentPassword, newTOTPSecret, account.prompt); err != nil {
+				return nil, fmt.Errorf("refresh authentication session: %w", err)
+			}
+			return refreshedClient, nil
+		},
 		resetPassword: resetAccountPassword,
 	})
 	if err != nil {
@@ -96,6 +109,13 @@ func executeCredentialRotation(ctx context.Context, request credentialRotationRe
 	}
 	if targets&rotatePassword == 0 {
 		return newTOTPSecret, "", nil
+	}
+	if targets&rotateTOTP != 0 {
+		refreshedClient, err := operations.refreshSession(ctx, request.currentPassword, newTOTPSecret)
+		if err != nil {
+			return "", "", fmt.Errorf("refresh authentication session before password reset: %w", err)
+		}
+		request.account.client = refreshedClient
 	}
 	if err := operations.resetPassword(ctx, passwordReset{
 		client:      request.account.client,
