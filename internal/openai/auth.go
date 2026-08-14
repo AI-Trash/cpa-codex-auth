@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -132,8 +131,7 @@ func ExchangeCodeForToken(c *client.Client, codeValue, verifier, redirectURI str
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("token exchange failed (%d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("token exchange failed: status %d", resp.StatusCode)
 	}
 
 	var raw struct {
