@@ -14,9 +14,9 @@ type postAccountSetupOperations struct {
 	save              func(tokenResult) error
 }
 
-func finalizeCodexAuthentication(firstToken tokenResult, rotate bool, operations postAccountSetupOperations) error {
+func finalizeCodexAuthentication(firstToken tokenResult, rotate rotationTargets, operations postAccountSetupOperations) error {
 	token := firstToken
-	if rotate {
+	if rotate != 0 {
 		finalToken, err := operations.authenticateFinal()
 		if err != nil {
 			return fmt.Errorf("final Codex OAuth: %w", err)
@@ -44,13 +44,13 @@ func runAuthentication(ctx context.Context, credentials startupCredentials, prom
 	if err != nil {
 		return err
 	}
-	if credentials.rotate {
+	if credentials.rotate != 0 {
 		password, totpSecret, err = rotateCredentials(ctx, authenticatedAccount{
 			client:      firstClient,
 			accessToken: accessToken,
 			email:       credentials.email,
 			prompt:      prompt,
-		})
+		}, credentials.rotate, password, totpSecret)
 		if err != nil {
 			return err
 		}

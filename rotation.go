@@ -38,49 +38,64 @@ type credentialRotationOperations struct {
 	resetPassword func(context.Context, passwordReset) error
 }
 
-func rotateCredentials(ctx context.Context, account authenticatedAccount) (string, string, error) {
-	info, err := getMFAInfo(ctx, account.client, account.accessToken)
-	if err != nil {
-		return "", "", err
+func rotateCredentials(ctx context.Context, account authenticatedAccount, targets rotationTargets, password, totpSecret string) (string, string, error) {
+	request := credentialRotationRequest{
+		account: account,
 	}
-	newPassword, err := generatePassword()
-	if err != nil {
-		return "", "", err
+	if targets&rotateTOTP != 0 {
+		info, err := getMFAInfo(ctx, account.client, account.accessToken)
+		if err != nil {
+			return password, totpSecret, err
+		}
+		request.info = info
 	}
-	newTOTPSecret, err := executeCredentialRotation(ctx, credentialRotationRequest{
-		account:     account,
-		info:        info,
-		newPassword: newPassword,
-	}, credentialRotationOperations{
+	if targets&rotatePassword != 0 {
+		newPassword, err := generatePassword()
+		if err != nil {
+			return password, totpSecret, err
+		}
+		request.newPassword = newPassword
+	}
+	newTOTPSecret, newPassword, err := executeCredentialRotation(ctx, request, targets, credentialRotationOperations{
 		disableTOTP:   disableTOTP,
 		enrollTOTP:    enrollTOTP,
 		resetPassword: resetAccountPassword,
 	})
 	if err != nil {
-		return "", "", err
+		return password, totpSecret, err
 	}
-	if _, err := fmt.Fprintf(account.prompt.output, "Generated password: %s\n", newPassword); err != nil {
-		return "", "", fmt.Errorf("print generated password: %w", err)
+	if newPassword != "" {
+		password = newPassword
 	}
-	return newPassword, newTOTPSecret, nil
+	if newTOTPSecret != "" {
+		totpSecret = newTOTPSecret
+	}
+	return password, totpSecret, nil
 }
 
-func executeCredentialRotation(ctx context.Context, request credentialRotationRequest, operations credentialRotationOperations) (string, error) {
-	if request.info.isEnabled() {
+func executeCredentialRotation(ctx context.Context, request credentialRotationRequest, targets rotationTargets, operations credentialRotationOperations) (string, string, error) {
+	if targets&rotateTOTP != 0 && request.info.isEnabled() {
 		factorID, err := request.info.authenticatorFactorID()
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if err := operations.disableTOTP(ctx, mfaSession{client: request.account.client, accessToken: request.account.accessToken}, factorID); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
-	newTOTPSecret, err := operations.enrollTOTP(ctx, request.account.client, request.account.accessToken)
-	if err != nil {
-		return "", err
+	var newTOTPSecret string
+	if targets&rotateTOTP != 0 {
+		var err error
+		newTOTPSecret, err = operations.enrollTOTP(ctx, request.account.client, request.account.accessToken)
+		if err != nil {
+			return "", "", err
+		}
+		if _, err := fmt.Fprintf(request.account.prompt.output, "Generated TOTP secret: %s\n", newTOTPSecret); err != nil {
+			return "", "", fmt.Errorf("print generated TOTP secret: %w", err)
+		}
 	}
-	if _, err := fmt.Fprintf(request.account.prompt.output, "Generated TOTP secret: %s\n", newTOTPSecret); err != nil {
-		return "", fmt.Errorf("print generated TOTP secret: %w", err)
+	if targets&rotatePassword == 0 {
+		return newTOTPSecret, "", nil
 	}
 	if err := operations.resetPassword(ctx, passwordReset{
 		client:      request.account.client,
@@ -88,9 +103,12 @@ func executeCredentialRotation(ctx context.Context, request credentialRotationRe
 		newPassword: request.newPassword,
 		prompt:      request.account.prompt,
 	}); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return newTOTPSecret, nil
+	if _, err := fmt.Fprintf(request.account.prompt.output, "Generated password: %s\n", request.newPassword); err != nil {
+		return "", "", fmt.Errorf("print generated password: %w", err)
+	}
+	return newTOTPSecret, request.newPassword, nil
 }
 
 func resetAccountPassword(ctx context.Context, reset passwordReset) error {

@@ -41,7 +41,7 @@ func TestFinalizeCodexAuthentication_whenNotRotating_savesFirstTokenWithoutSecon
 	}
 
 	// When: the authentication orchestration runs to credential saving.
-	err := finalizeCodexAuthentication(firstToken, false, operations)
+	err := finalizeCodexAuthentication(firstToken, 0, operations)
 
 	// Then: the first token reaches saving and final OAuth authentication is not called.
 	if err != nil {
@@ -73,7 +73,7 @@ func TestFinalizeCodexAuthentication_whenRotating_savesFinalTokenAfterOneAuthent
 	}
 
 	// When: the authentication finalization runs in rotate mode.
-	err := finalizeCodexAuthentication(firstToken, true, operations)
+	err := finalizeCodexAuthentication(firstToken, rotateTOTP, operations)
 
 	// Then: final authentication runs once and its token is saved.
 	if err != nil {
