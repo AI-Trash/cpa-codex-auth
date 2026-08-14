@@ -9,6 +9,7 @@ import (
 
 	"github.com/chromedp/chromedp"
 
+	"openai-tool/cpa-codex-auth/internal/browser"
 	"openai-tool/cpa-codex-auth/internal/client"
 )
 
@@ -20,6 +21,11 @@ type sentinelBrowserRequest struct {
 }
 
 func fetchSentinelChallengeHeadless(request sentinelBrowserRequest) ([]byte, error) {
+	executablePath, err := browser.Executable(request.proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolve Sentinel browser executable: %w", err)
+	}
+
 	profileDir, err := os.MkdirTemp("", "cpa-codex-sentinel-")
 	if err != nil {
 		return nil, fmt.Errorf("create headless browser profile: %w", err)
@@ -28,6 +34,7 @@ func fetchSentinelChallengeHeadless(request sentinelBrowserRequest) ([]byte, err
 
 	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
 	opts = append(opts,
+		chromedp.ExecPath(executablePath),
 		chromedp.UserDataDir(profileDir),
 		chromedp.UserAgent(client.UA),
 		chromedp.WindowSize(1280, 720),
