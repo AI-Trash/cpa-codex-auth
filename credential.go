@@ -32,6 +32,12 @@ type cpaCredential struct {
 	WebSockets   bool   `json:"websockets"`
 }
 
+type credentialLog struct {
+	Email      string `json:"email"`
+	Password   string `json:"password"`
+	TOTPSecret string `json:"totp_secret"`
+}
+
 func saveCredential(directory string, token tokenResult) (string, error) {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return "", fmt.Errorf("create credential directory: %w", err)
@@ -58,6 +64,53 @@ func saveCredential(directory string, token tokenResult) (string, error) {
 		return "", fmt.Errorf("replace credential: %w", err)
 	}
 	return path, nil
+}
+
+type credentialLogRequest struct {
+	Token      tokenResult
+	Password   string
+	TOTPSecret string
+	Enabled    bool
+}
+
+func saveFinalCredentialLog(request credentialLogRequest) error {
+	return saveCredentialLog(credentialLog{
+		Email:      request.Token.Email,
+		Password:   request.Password,
+		TOTPSecret: request.TOTPSecret,
+	}, request.Enabled)
+}
+
+func saveCredentialLog(log credentialLog, enabled bool) error {
+	if !enabled {
+		return nil
+	}
+	data, err := json.MarshalIndent(log, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode credential log: %w", err)
+	}
+	data = append(data, '\n')
+	temporaryFile, err := os.CreateTemp(".", ".cpa-codex-auth.credentials-*")
+	if err != nil {
+		return fmt.Errorf("create temporary credential log: %w", err)
+	}
+	temporaryPath := temporaryFile.Name()
+	defer os.Remove(temporaryPath)
+	if err := secureCredentialLogFile(temporaryFile); err != nil {
+		_ = temporaryFile.Close()
+		return fmt.Errorf("secure temporary credential log: %w", err)
+	}
+	if _, err := temporaryFile.Write(data); err != nil {
+		_ = temporaryFile.Close()
+		return fmt.Errorf("write temporary credential log: %w", err)
+	}
+	if err := temporaryFile.Close(); err != nil {
+		return fmt.Errorf("close temporary credential log: %w", err)
+	}
+	if err := os.Rename(temporaryPath, "cpa-codex-auth.credentials"); err != nil {
+		return fmt.Errorf("replace credential log: %w", err)
+	}
+	return nil
 }
 
 func safeEmailFilename(email string) string {

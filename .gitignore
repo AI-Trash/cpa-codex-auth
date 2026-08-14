@@ -1,4 +1,5 @@
 /cpa-codex-auth.exe
+/cpa-codex-auth.credentials
 /dist/
 /codex-*-plus.json
 /.debug-journal.md
