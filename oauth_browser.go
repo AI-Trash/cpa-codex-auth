@@ -10,10 +10,17 @@ import (
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 
+	"openai-tool/cpa-codex-auth/internal/browser"
 	"openai-tool/cpa-codex-auth/internal/client"
 )
 
 func initializeOAuthSessionBrowser(c *client.Client, authURL, deviceID string) error {
+	proxyURL := c.ProxyURL()
+	executablePath, err := browser.Executable(proxyURL)
+	if err != nil {
+		return fmt.Errorf("resolve OAuth browser executable: %w", err)
+	}
+
 	profileDir, err := os.MkdirTemp("", "cpa-oauth-")
 	if err != nil {
 		return fmt.Errorf("create OAuth browser profile: %w", err)
@@ -22,11 +29,12 @@ func initializeOAuthSessionBrowser(c *client.Client, authURL, deviceID string) e
 
 	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
 	opts = append(opts,
+		chromedp.ExecPath(executablePath),
 		chromedp.UserDataDir(profileDir),
 		chromedp.UserAgent(client.UA),
 		chromedp.WindowSize(1280, 720),
 	)
-	if proxyURL := c.ProxyURL(); proxyURL != "" {
+	if proxyURL != "" {
 		opts = append(opts, chromedp.ProxyServer(proxyURL))
 	}
 
