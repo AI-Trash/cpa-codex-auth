@@ -11,10 +11,11 @@ import (
 )
 
 type startupCredentials struct {
-	email      string
-	password   string
-	totpSecret string
-	rotate     rotationTargets
+	email                string
+	password             string
+	totpSecret           string
+	rotate               rotationTargets
+	credentialLogEnabled bool
 }
 
 type rotationTargets uint8
@@ -58,6 +59,7 @@ func newRootCommand(input io.Reader, output io.Writer, run runFunc) *cobra.Comma
 	var rotate string
 	var proxy string
 	var outputDirectory string
+	var noLog bool
 	command := &cobra.Command{
 		Use:           "cpa-codex-auth --email <email> [--password <password>] [--totpsecret <secret>] [--rotate <totp,password>]",
 		Short:         "Configure an OpenAI account and save a CPA Codex credential",
@@ -66,10 +68,11 @@ func newRootCommand(input io.Reader, output io.Writer, run runFunc) *cobra.Comma
 		SilenceUsage:  true,
 		RunE: func(command *cobra.Command, _ []string) error {
 			credentials := startupCredentials{
-				email:      strings.TrimSpace(email),
-				password:   password,
-				totpSecret: strings.TrimSpace(totpSecret),
-				rotate:     0,
+				email:                strings.TrimSpace(email),
+				password:             password,
+				totpSecret:           strings.TrimSpace(totpSecret),
+				rotate:               0,
+				credentialLogEnabled: !noLog,
 			}
 			if credentials.email == "" {
 				return fmt.Errorf("--email is required")
@@ -98,6 +101,7 @@ func newRootCommand(input io.Reader, output io.Writer, run runFunc) *cobra.Comma
 	command.Flags().StringVarP(&rotate, "rotate", "r", "", "comma-separated credentials to replace: totp, password")
 	command.Flags().StringVar(&proxy, "proxy", "", "HTTP or SOCKS proxy URL")
 	command.Flags().StringVarP(&outputDirectory, "output", "o", ".", "credential output directory")
+	command.Flags().BoolVar(&noLog, "no-log", false, "do not save final password and TOTP credentials")
 	return command
 }
 

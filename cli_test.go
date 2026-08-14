@@ -30,8 +30,48 @@ func TestCLI_acceptsNamedCredentials_whenFlagsAreGiven(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute command: %v", err)
 	}
-	if got.email != "person@example.com" || got.password != "password-value" || got.totpSecret != "totp-value" || got.rotate != (rotateTOTP|rotatePassword) {
+	if got.email != "person@example.com" || got.password != "password-value" || got.totpSecret != "totp-value" || got.rotate != (rotateTOTP|rotatePassword) || !got.credentialLogEnabled {
 		t.Fatalf("unexpected credentials: %#v", got)
+	}
+}
+
+func TestCLI_disablesCredentialLog_whenNoLogIsGiven(t *testing.T) {
+	// Given: a runner that records parsed startup credentials.
+	var got startupCredentials
+	run := func(_ context.Context, credentials startupCredentials, _ *prompter) error {
+		got = credentials
+		return nil
+	}
+	command := newRootCommand(strings.NewReader(""), new(bytes.Buffer), run)
+	command.SetArgs([]string{"--email", "person@example.com", "--no-log"})
+
+	// When: the command executes with secret logging disabled.
+	err := command.ExecuteContext(context.Background())
+
+	// Then: only the positive logging setting changes.
+	if err != nil {
+		t.Fatalf("execute command: %v", err)
+	}
+	if got.credentialLogEnabled {
+		t.Fatalf("credentialLogEnabled = true, want false")
+	}
+}
+
+func TestCLI_help_exposesNoLogFlag(t *testing.T) {
+	// Given: a root command with help output captured.
+	output := new(bytes.Buffer)
+	command := newRootCommand(strings.NewReader(""), output, nil)
+	command.SetArgs([]string{"--help"})
+
+	// When: help is requested.
+	err := command.ExecuteContext(context.Background())
+
+	// Then: the no-log flag is documented by Cobra.
+	if err != nil {
+		t.Fatalf("execute help: %v", err)
+	}
+	if !strings.Contains(output.String(), "--no-log") {
+		t.Fatalf("help output does not contain --no-log: %s", output.String())
 	}
 }
 
