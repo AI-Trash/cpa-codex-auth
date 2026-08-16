@@ -7,13 +7,13 @@ import (
 	"testing"
 )
 
-func TestSaveCredentialLog_setsOwnerOnlyMode_whenEnabled(t *testing.T) {
-	// Given: an isolated current directory for a final credential log.
+func TestAppendCredentialChange_setsOwnerOnlyMode_whenEnabled(t *testing.T) {
+	// Given: an isolated current directory for an account change log.
 	t.Chdir(t.TempDir())
 
-	// When: the credential log is saved.
-	if err := saveCredentialLog(credentialLog{Email: "user@example.com", Password: "password", TOTPSecret: "totp"}, true); err != nil {
-		t.Fatalf("save credential log: %v", err)
+	// When: the credential change is appended.
+	if err := appendCredentialChange(credentialChange{Email: "user@example.com", Operation: credentialChangePasswordReset, Password: "password"}, true); err != nil {
+		t.Fatalf("append credential change: %v", err)
 	}
 
 	// Then: only the owner has Unix file permissions.
