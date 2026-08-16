@@ -101,7 +101,7 @@ func newRootCommand(input io.Reader, output io.Writer, run runFunc) *cobra.Comma
 	command.Flags().StringVarP(&rotate, "rotate", "r", "", "comma-separated credentials to replace: totp, password")
 	command.Flags().StringVar(&proxy, "proxy", "", "HTTP or SOCKS proxy URL")
 	command.Flags().StringVarP(&outputDirectory, "output", "o", ".", "credential output directory")
-	command.Flags().BoolVar(&noLog, "no-log", false, "do not save final password and TOTP credentials")
+	command.Flags().BoolVar(&noLog, "no-log", false, "do not append account credential changes")
 	return command
 }
 

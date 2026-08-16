@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -44,147 +45,94 @@ func TestSaveCredential_replaces_stable_CPA_file(t *testing.T) {
 	}
 }
 
-func TestSaveCredentialLog_writesFinalCredentialsToCurrentDirectory(t *testing.T) {
-	// Given: final credentials and an isolated current directory.
+func TestAppendCredentialChange_preservesEveryOperation(t *testing.T) {
+	// Given: two successful account changes in one working directory.
 	t.Chdir(t.TempDir())
-	credentials := startupCredentials{
-		email:                "user@example.com",
-		password:             "final-password",
-		totpSecret:           "FINAL_TOTP",
-		credentialLogEnabled: true,
+	first := credentialChange{Email: "user@example.com", Operation: credentialChangeTOTPEnrolled, TOTPSecret: "NEW_TOTP"}
+	second := credentialChange{Email: "user@example.com", Operation: credentialChangePasswordReset, Password: "new-password"}
+
+	// When: each change is recorded.
+	if err := appendCredentialChange(first, true); err != nil {
+		t.Fatalf("append first change: %v", err)
+	}
+	if err := appendCredentialChange(second, true); err != nil {
+		t.Fatalf("append second change: %v", err)
 	}
 
-	// When: the credential log is saved.
-	if err := saveCredentialLog(credentialLog{Email: credentials.email, Password: credentials.password, TOTPSecret: credentials.totpSecret}, credentials.credentialLogEnabled); err != nil {
-		t.Fatalf("save credential log: %v", err)
-	}
-
-	// Then: the dedicated cwd file contains only the final credential fields.
-	path := filepath.Join(".", "cpa-codex-auth.credentials")
-	data, err := os.ReadFile(path)
+	// Then: both records remain in order instead of the second replacing the first.
+	file, err := os.Open("cpa-codex-auth.credentials")
 	if err != nil {
-		t.Fatalf("read credential log: %v", err)
+		t.Fatalf("open credential change log: %v", err)
 	}
-	var saved map[string]string
-	if err := json.Unmarshal(data, &saved); err != nil {
-		t.Fatalf("decode credential log: %v", err)
+	defer file.Close()
+	var changes []credentialChange
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var change credentialChange
+		if err := json.Unmarshal(scanner.Bytes(), &change); err != nil {
+			t.Fatalf("decode change: %v", err)
+		}
+		changes = append(changes, change)
 	}
-	if saved["email"] != credentials.email || saved["password"] != credentials.password || saved["totp_secret"] != credentials.totpSecret {
-		t.Fatalf("unexpected credential log: %#v", saved)
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan changes: %v", err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat credential log: %v", err)
+	if len(changes) != 2 || changes[0].Operation != first.Operation || changes[0].TOTPSecret != first.TOTPSecret || changes[1].Operation != second.Operation || changes[1].Password != second.Password {
+		t.Fatalf("credential changes = %#v", changes)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
-		t.Fatalf("credential log mode = %o, want 600", info.Mode().Perm())
-	}
-	if matches, err := filepath.Glob(".cpa-codex-auth.credentials-*"); err != nil || len(matches) != 0 {
-		t.Fatalf("temporary credential files remain: %v", matches)
-	}
-}
-
-func TestSaveCredentialLog_writesNothingWhenDisabled(t *testing.T) {
-	// Given: final credentials with logging disabled in an isolated cwd.
-	t.Chdir(t.TempDir())
-	credentials := startupCredentials{email: "user@example.com", password: "secret", totpSecret: "totp"}
-
-	// When: the credential log is requested.
-	if err := saveCredentialLog(credentialLog{Email: credentials.email, Password: credentials.password, TOTPSecret: credentials.totpSecret}, credentials.credentialLogEnabled); err != nil {
-		t.Fatalf("save disabled credential log: %v", err)
-	}
-
-	// Then: no dedicated secret file is created.
-	if _, err := os.Stat("cpa-codex-auth.credentials"); !os.IsNotExist(err) {
-		t.Fatalf("credential log exists or stat failed: %v", err)
-	}
-}
-
-func TestSaveCredentialLog_removesTemporaryFileWhenWriteFails(t *testing.T) {
-	// Given: a cwd where the target path is an unwritable directory.
-	t.Chdir(t.TempDir())
-	if err := os.Mkdir("cpa-codex-auth.credentials", 0o700); err != nil {
-		t.Fatalf("create blocking path: %v", err)
-	}
-	credentials := startupCredentials{email: "user@example.com", password: "secret", totpSecret: "totp", credentialLogEnabled: true}
-
-	// When: atomic replacement cannot complete.
-	if err := saveCredentialLog(credentialLog{Email: credentials.email, Password: credentials.password, TOTPSecret: credentials.totpSecret}, credentials.credentialLogEnabled); err == nil {
-		t.Fatal("save credential log unexpectedly succeeded")
-	}
-
-	// Then: no temporary secret file remains.
-	matches, err := filepath.Glob(".cpa-codex-auth.credentials-*")
-	if err != nil {
-		t.Fatalf("find temporary credential files: %v", err)
-	}
-	if len(matches) != 0 {
-		t.Fatalf("temporary credential files remain: %v", matches)
-	}
-}
-
-func TestSaveCredentialLog_replacesExistingFinalValues(t *testing.T) {
-	// Given: two successful finalized credential snapshots in the same directory.
-	t.Chdir(t.TempDir())
-	first := credentialLog{Email: "user@example.com", Password: "first-password", TOTPSecret: "FIRST_TOTP"}
-	second := credentialLog{Email: "user@example.com", Password: "second-password", TOTPSecret: "SECOND_TOTP"}
-	if err := saveCredentialLog(first, true); err != nil {
-		t.Fatalf("save first credential log: %v", err)
-	}
-
-	// When: the final values are written again.
-	if err := saveCredentialLog(second, true); err != nil {
-		t.Fatalf("replace credential log: %v", err)
-	}
-
-	// Then: the stable file contains only the second complete snapshot.
-	data, err := os.ReadFile("cpa-codex-auth.credentials")
-	if err != nil {
-		t.Fatalf("read replacement credential log: %v", err)
-	}
-	var saved credentialLog
-	if err := json.Unmarshal(data, &saved); err != nil {
-		t.Fatalf("decode replacement credential log: %v", err)
-	}
-	if saved != second {
-		t.Fatalf("replacement credential log = %#v, want %#v", saved, second)
+	if changes[0].OccurredAt.IsZero() || changes[1].OccurredAt.IsZero() {
+		t.Fatalf("credential change timestamps missing: %#v", changes)
 	}
 	if runtime.GOOS != "windows" {
 		info, statErr := os.Stat("cpa-codex-auth.credentials")
 		if statErr != nil {
-			t.Fatalf("stat replacement credential log: %v", statErr)
+			t.Fatalf("stat credential change log: %v", statErr)
 		}
 		if info.Mode().Perm() != 0o600 {
-			t.Fatalf("replacement credential log mode = %o, want 600", info.Mode().Perm())
+			t.Fatalf("credential change log mode = %o, want 600", info.Mode().Perm())
 		}
 	}
 }
 
-func TestSaveFinalCredentialLog_writesPostRotationValues(t *testing.T) {
-	// Given: startup values differ from the generated final credentials.
+func TestAppendCredentialChange_writesNothingWhenDisabled(t *testing.T) {
+	// Given: an account change with logging disabled.
 	t.Chdir(t.TempDir())
-	request := credentialLogRequest{
-		Token:      tokenResult{Email: "final@example.com"},
-		Password:   "final-password",
-		TOTPSecret: "FINAL_TOTP",
-		Enabled:    true,
+
+	// When: the change is offered to the log.
+	if err := appendCredentialChange(credentialChange{Email: "user@example.com", Operation: credentialChangePasswordReset, Password: "secret"}, false); err != nil {
+		t.Fatalf("append disabled change: %v", err)
 	}
 
-	// When: the post-authentication log is written.
-	if err := saveFinalCredentialLog(request); err != nil {
-		t.Fatalf("save final credential log: %v", err)
+	// Then: login-only and opted-out runs leave no credential log.
+	if _, err := os.Stat("cpa-codex-auth.credentials"); !os.IsNotExist(err) {
+		t.Fatalf("credential change log exists or stat failed: %v", err)
+	}
+}
+
+func TestAppendCredentialChange_rejectsSymbolicLink(t *testing.T) {
+	// Given: the audit-log path is a symbolic link to another file.
+	workingDirectory := t.TempDir()
+	t.Chdir(workingDirectory)
+	target := filepath.Join(workingDirectory, "target")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := os.Symlink(target, "cpa-codex-auth.credentials"); err != nil {
+		t.Skipf("symbolic links unavailable: %v", err)
 	}
 
-	// Then: only the post-rotation values reach the persistent log.
-	data, err := os.ReadFile("cpa-codex-auth.credentials")
-	if err != nil {
-		t.Fatalf("read final credential log: %v", err)
+	// When: a credential change is appended.
+	err := appendCredentialChange(credentialChange{Email: "user@example.com", Operation: credentialChangePasswordReset, Password: "password"}, true)
+
+	// Then: the linked target remains untouched.
+	if err == nil {
+		t.Fatal("append through symbolic link unexpectedly succeeded")
 	}
-	var saved credentialLog
-	if err := json.Unmarshal(data, &saved); err != nil {
-		t.Fatalf("decode final credential log: %v", err)
+	data, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read target: %v", readErr)
 	}
-	if saved.Email != request.Token.Email || saved.Password != request.Password || saved.TOTPSecret != request.TOTPSecret {
-		t.Fatalf("final credential log = %#v", saved)
+	if len(data) != 0 {
+		t.Fatalf("symbolic-link target was modified: %q", data)
 	}
 }

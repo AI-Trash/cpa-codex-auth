@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,10 +33,20 @@ type cpaCredential struct {
 	WebSockets   bool   `json:"websockets"`
 }
 
-type credentialLog struct {
-	Email      string `json:"email"`
-	Password   string `json:"password"`
-	TOTPSecret string `json:"totp_secret"`
+const (
+	credentialChangeTOTPDisabled  = "totp_disabled"
+	credentialChangeTOTPEnrolled  = "totp_enrolled"
+	credentialChangePasswordSet   = "password_set"
+	credentialChangePasswordReset = "password_reset"
+)
+
+type credentialChange struct {
+	OccurredAt time.Time `json:"occurred_at"`
+	Email      string    `json:"email"`
+	Operation  string    `json:"operation"`
+	FactorID   string    `json:"factor_id,omitempty"`
+	Password   string    `json:"password,omitempty"`
+	TOTPSecret string    `json:"totp_secret,omitempty"`
 }
 
 func saveCredential(directory string, token tokenResult) (string, error) {
@@ -66,49 +77,44 @@ func saveCredential(directory string, token tokenResult) (string, error) {
 	return path, nil
 }
 
-type credentialLogRequest struct {
-	Token      tokenResult
-	Password   string
-	TOTPSecret string
-	Enabled    bool
-}
-
-func saveFinalCredentialLog(request credentialLogRequest) error {
-	return saveCredentialLog(credentialLog{
-		Email:      request.Token.Email,
-		Password:   request.Password,
-		TOTPSecret: request.TOTPSecret,
-	}, request.Enabled)
-}
-
-func saveCredentialLog(log credentialLog, enabled bool) error {
+func appendCredentialChange(change credentialChange, enabled bool) error {
 	if !enabled {
 		return nil
 	}
-	data, err := json.MarshalIndent(log, "", "  ")
+	if change.OccurredAt.IsZero() {
+		change.OccurredAt = time.Now().UTC()
+	}
+	data, err := json.Marshal(change)
 	if err != nil {
-		return fmt.Errorf("encode credential log: %w", err)
+		return fmt.Errorf("encode credential change: %w", err)
 	}
 	data = append(data, '\n')
-	temporaryFile, err := os.CreateTemp(".", ".cpa-codex-auth.credentials-*")
+	if info, statErr := os.Lstat("cpa-codex-auth.credentials"); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("credential change log is a symbolic link")
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect credential change log: %w", statErr)
+	}
+	file, err := os.OpenFile("cpa-codex-auth.credentials", credentialLogOpenFlags, 0o600)
 	if err != nil {
-		return fmt.Errorf("create temporary credential log: %w", err)
+		return fmt.Errorf("open credential change log: %w", err)
 	}
-	temporaryPath := temporaryFile.Name()
-	defer os.Remove(temporaryPath)
-	if err := secureCredentialLogFile(temporaryFile); err != nil {
-		_ = temporaryFile.Close()
-		return fmt.Errorf("secure temporary credential log: %w", err)
+	if err := secureCredentialLogFile(file); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("secure credential change log: %w", err)
 	}
-	if _, err := temporaryFile.Write(data); err != nil {
-		_ = temporaryFile.Close()
-		return fmt.Errorf("write temporary credential log: %w", err)
+	written, writeErr := file.Write(data)
+	if writeErr == nil && written != len(data) {
+		writeErr = io.ErrShortWrite
 	}
-	if err := temporaryFile.Close(); err != nil {
-		return fmt.Errorf("close temporary credential log: %w", err)
+	if writeErr == nil {
+		writeErr = file.Sync()
 	}
-	if err := os.Rename(temporaryPath, "cpa-codex-auth.credentials"); err != nil {
-		return fmt.Errorf("replace credential log: %w", err)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return fmt.Errorf("append credential change: %w", writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close credential change log: %w", closeErr)
 	}
 	return nil
 }
