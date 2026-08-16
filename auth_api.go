@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -91,7 +92,18 @@ func postAuthJSON(ctx context.Context, c *client.Client, path string, body []byt
 		return authResponse{}, fmt.Errorf("read auth response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return authResponse{}, fmt.Errorf("auth request %s failed: status %d", path, resp.StatusCode)
+		return authResponse{}, fmt.Errorf(
+			"auth request %s failed: status=%d source=%q content_type=%q server=%q cf_ray=%q cf_mitigated=%q body_bytes=%d body_sha256=%x",
+			path,
+			resp.StatusCode,
+			resp.Header.Get(authTransportSourceHeader),
+			resp.Header.Get("Content-Type"),
+			resp.Header.Get("Server"),
+			resp.Header.Get("Cf-Ray"),
+			resp.Header.Get("Cf-Mitigated"),
+			len(responseBody),
+			sha256.Sum256(responseBody),
+		)
 	}
 	var result authResponse
 	if err := json.Unmarshal(responseBody, &result); err != nil {

@@ -116,6 +116,88 @@ func TestOAuthSession_usesBrowserForChallengedAndFutureAuthRequests(t *testing.T
 	}
 }
 
+func TestOAuthSession_retriesMarkerlessDirectForbiddenInBrowser(t *testing.T) {
+	// Given: password verification returns a markerless 403 from the direct transport.
+	browser := &fakeOAuthBrowser{}
+	session := &oauthSession{
+		start: &openai.OAuthStart{AuthURL: authBaseURL + "/oauth/authorize"},
+		newBrowser: func(context.Context, oauthBrowserLaunchRequest) (oauthBrowser, error) {
+			return browser, nil
+		},
+	}
+	directCalls := 0
+	direct := func(*http.Request, bool) (*http.Response, error) {
+		directCalls++
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"forbidden"}`)),
+		}, nil
+	}
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, authBaseURL+"/api/accounts/password/verify", nil)
+	if err != nil {
+		t.Fatalf("build password verification request: %v", err)
+	}
+
+	// When: the request is handled.
+	response, err := session.HandleAuthRequest(request, true, direct)
+
+	// Then: the direct 403 is retried once in the persistent browser.
+	if err != nil {
+		t.Fatalf("handle markerless forbidden response: %v", err)
+	}
+	response.Body.Close()
+	if directCalls != 1 || len(browser.fetches) != 1 {
+		t.Fatalf("direct calls = %d, browser fetches = %d; want 1, 1", directCalls, len(browser.fetches))
+	}
+	if got := response.Header.Get(authTransportSourceHeader); got != authTransportSourceBrowser {
+		t.Fatalf("response source = %q, want %q", got, authTransportSourceBrowser)
+	}
+}
+
+func TestOAuthSession_marksDirectAndBrowserResponseSources(t *testing.T) {
+	// Given: one ordinary direct response followed by one challenged response.
+	browser := &fakeOAuthBrowser{}
+	session := &oauthSession{
+		start: &openai.OAuthStart{AuthURL: authBaseURL + "/oauth/authorize"},
+		newBrowser: func(context.Context, oauthBrowserLaunchRequest) (oauthBrowser, error) {
+			return browser, nil
+		},
+	}
+	directCalls := 0
+	direct := func(*http.Request, bool) (*http.Response, error) {
+		directCalls++
+		if directCalls == 1 {
+			return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"denied"}`))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{"Cf-Mitigated": []string{"challenge"}}, Body: io.NopCloser(strings.NewReader("challenge"))}, nil
+	}
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, authBaseURL+"/api/accounts/password/verify", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+
+	// When: direct and challenged requests are handled.
+	directResponse, err := session.HandleAuthRequest(request, true, direct)
+	if err != nil {
+		t.Fatalf("handle direct response: %v", err)
+	}
+	directResponse.Body.Close()
+	browserResponse, err := session.HandleAuthRequest(request, true, direct)
+	if err != nil {
+		t.Fatalf("handle browser response: %v", err)
+	}
+	browserResponse.Body.Close()
+
+	// Then: callers can distinguish the transport without response bodies.
+	if got := directResponse.Header.Get(authTransportSourceHeader); got != authTransportSourceDirect {
+		t.Fatalf("direct source = %q, want %q", got, authTransportSourceDirect)
+	}
+	if got := browserResponse.Header.Get(authTransportSourceHeader); got != authTransportSourceBrowser {
+		t.Fatalf("browser source = %q, want %q", got, authTransportSourceBrowser)
+	}
+}
+
 func TestOAuthSession_followsBrowserCallbackAndExchangesOnlyItsCode(t *testing.T) {
 	// Given: browser-backed OAuth redirect completion and a matching localhost callback.
 	browser := &fakeOAuthBrowser{callback: "http://localhost:1455/auth/callback?code=browser-code&state=expected-state"}

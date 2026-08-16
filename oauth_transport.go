@@ -14,6 +14,12 @@ import (
 
 var ErrManagedChallenge = errors.New("managed challenge")
 
+const (
+	authTransportSourceHeader  = "X-Cpa-Auth-Transport"
+	authTransportSourceDirect  = "direct"
+	authTransportSourceBrowser = "browser"
+)
+
 type managedChallengeError struct {
 	statusCode int
 }
@@ -92,7 +98,8 @@ func (s *oauthSession) HandleAuthRequest(request *http.Request, followRedirects 
 	if closeErr != nil {
 		return nil, fmt.Errorf("close auth response: %w", closeErr)
 	}
-	if !isManagedChallenge(response, responseBody) {
+	if response.StatusCode != http.StatusForbidden && !isManagedChallenge(response, responseBody) {
+		response.Header.Set(authTransportSourceHeader, authTransportSourceDirect)
 		response.Body = io.NopCloser(bytes.NewReader(responseBody))
 		return response, nil
 	}
@@ -146,6 +153,7 @@ func (s *oauthSession) fetchInBrowser(ctx context.Context, request oauthBrowserF
 	if isManagedChallenge(response, body) {
 		return nil, managedChallengeError{statusCode: response.StatusCode}
 	}
+	response.Header.Set(authTransportSourceHeader, authTransportSourceBrowser)
 	response.Body = io.NopCloser(bytes.NewReader(body))
 	return response, nil
 }
