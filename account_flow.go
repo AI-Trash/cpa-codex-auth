@@ -46,7 +46,7 @@ func runAuthentication(ctx context.Context, credentials startupCredentials, prom
 	}
 	password := credentials.password
 	totpSecret := credentials.totpSecret
-	firstAuthentication, err := authenticate(ctx, firstClient, credentials.email, password, totpSecret, prompt)
+	firstAuthentication, err := authenticate(ctx, firstClient, credentials.email, password, totpSecret, credentials.credentialLogEnabled, prompt)
 	if err != nil {
 		return err
 	}
@@ -65,10 +65,11 @@ func runAuthentication(ctx context.Context, credentials startupCredentials, prom
 	}
 	if credentials.rotate != 0 {
 		password, totpSecret, err = rotateCredentials(ctx, authenticatedAccount{
-			client:      firstClient,
-			accessToken: accessToken,
-			email:       credentials.email,
-			prompt:      prompt,
+			client:               firstClient,
+			accessToken:          accessToken,
+			email:                credentials.email,
+			credentialLogEnabled: credentials.credentialLogEnabled,
+			prompt:               prompt,
 		}, credentials.rotate, password, totpSecret)
 		if err != nil {
 			return err
@@ -90,6 +91,9 @@ func runAuthentication(ctx context.Context, credentials startupCredentials, prom
 			if err != nil {
 				return err
 			}
+			if err := appendCredentialChange(credentialChange{Email: credentials.email, Operation: credentialChangeTOTPEnrolled, TOTPSecret: totpSecret}, credentials.credentialLogEnabled); err != nil {
+				return err
+			}
 			if _, err := fmt.Fprintf(prompt.output, "Generated TOTP secret: %s\n", totpSecret); err != nil {
 				return fmt.Errorf("print TOTP secret: %w", err)
 			}
@@ -104,7 +108,7 @@ func runAuthentication(ctx context.Context, credentials startupCredentials, prom
 			if clientErr != nil {
 				return tokenResult{}, fmt.Errorf("create final OAuth client: %w", clientErr)
 			}
-			finalAuthentication, authErr := authenticate(ctx, finalClient, credentials.email, password, totpSecret, prompt)
+			finalAuthentication, authErr := authenticate(ctx, finalClient, credentials.email, password, totpSecret, credentials.credentialLogEnabled, prompt)
 			if authErr != nil {
 				return tokenResult{}, authErr
 			}
@@ -123,20 +127,12 @@ func runAuthentication(ctx context.Context, credentials startupCredentials, prom
 			if outputErr != nil {
 				return outputErr
 			}
-			if err := saveFinalCredentialLog(credentialLogRequest{
-				Token:      token,
-				Password:   password,
-				TOTPSecret: totpSecret,
-				Enabled:    credentials.credentialLogEnabled,
-			}); err != nil {
-				return err
-			}
 			return nil
 		},
 	})
 }
 
-func authenticate(ctx context.Context, c *client.Client, email, password, totpSecret string, prompt *prompter) (*authenticatedOAuth, error) {
+func authenticate(ctx context.Context, c *client.Client, email, password, totpSecret string, credentialLogEnabled bool, prompt *prompter) (*authenticatedOAuth, error) {
 	session, err := initializeOAuthSession(ctx, c)
 	if err != nil {
 		return nil, err
@@ -147,6 +143,9 @@ func authenticate(ctx context.Context, c *client.Client, email, password, totpSe
 		Password:   password,
 		TOTPSecret: totpSecret,
 		Prompt:     prompt,
+		appendChange: func(change credentialChange) error {
+			return appendCredentialChange(change, credentialLogEnabled)
+		},
 	}, defaultAuthenticationOperations())
 	if err != nil {
 		session.Close()

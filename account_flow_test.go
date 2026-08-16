@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -52,6 +54,34 @@ func TestFinalizeCodexAuthentication_whenNotRotating_savesFirstTokenWithoutSecon
 	}
 	if secondAuthenticationCalls != 0 {
 		t.Fatalf("final authentication calls = %d, want 0", secondAuthenticationCalls)
+	}
+}
+
+func TestFinalizeCodexAuthentication_whenLoginOnly_doesNotCreateChangeLog(t *testing.T) {
+	// Given: a successful login that only needs its CPA credential saved.
+	workingDirectory := t.TempDir()
+	t.Chdir(workingDirectory)
+	outputDirectory := filepath.Join(workingDirectory, "output")
+	token := tokenResult{Email: "user@example.com"}
+	operations := postAccountSetupOperations{
+		authenticateFinal: func() (tokenResult, error) {
+			return tokenResult{}, errUnexpectedFinalAuthentication
+		},
+		save: func(token tokenResult) error {
+			_, err := saveCredential(outputDirectory, token)
+			return err
+		},
+	}
+
+	// When: login finalization saves the CPA credential.
+	err := finalizeCodexAuthentication(token, 0, operations)
+
+	// Then: no account-change audit log is created.
+	if err != nil {
+		t.Fatalf("finalize login-only authentication: %v", err)
+	}
+	if _, err := os.Stat("cpa-codex-auth.credentials"); !os.IsNotExist(err) {
+		t.Fatalf("credential change log exists or stat failed: %v", err)
 	}
 }
 
