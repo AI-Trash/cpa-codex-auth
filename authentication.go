@@ -7,11 +7,12 @@ import (
 )
 
 type authenticationRequest struct {
-	Session    *oauthSession
-	Email      string
-	Password   string
-	TOTPSecret string
-	Prompt     *prompter
+	Session      *oauthSession
+	Email        string
+	Password     string
+	TOTPSecret   string
+	Prompt       *prompter
+	appendChange func(credentialChange) error
 }
 
 type authenticationEmailRequest struct {
@@ -114,6 +115,10 @@ func authenticateSession(ctx context.Context, request authenticationRequest, ope
 			response, err = operations.createPassword(ctx, authenticationPasswordRequest{Session: request.Session, Email: request.Email, Password: password})
 			if err != nil {
 				response, err = operations.fetchAuthState(ctx, request.Session, authBaseURL+"/create-account/password")
+			} else if request.appendChange != nil {
+				if logErr := request.appendChange(credentialChange{Email: request.Email, Operation: credentialChangePasswordSet, Password: password}); logErr != nil {
+					return tokenResult{}, password, totpSecret, logErr
+				}
 			}
 		case "email_otp_send", "email_otp_verification":
 			response, err = operations.handleEmailVerification(ctx, authenticationEmailRequest{Session: request.Session, Email: request.Email, Prompt: request.Prompt})
