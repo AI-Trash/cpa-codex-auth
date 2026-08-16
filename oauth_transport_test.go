@@ -167,6 +167,22 @@ func TestManagedChallenge_detectsHTMLMarkersAfterCheckingCFMitigated(t *testing.
 	}
 }
 
+func TestManagedChallenge_detectsCloudflareJavaScriptCookieInterstitial(t *testing.T) {
+	// Given: the canonical Cloudflare interstitial returned by password verification.
+	response := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{"Content-Type": []string{"text/html; charset=UTF-8"}},
+	}
+
+	// When: the response is classified for browser fallback.
+	managed := isManagedChallenge(response, []byte("<html><body>Enable JavaScript and cookies to continue</body></html>"))
+
+	// Then: the interstitial activates the persistent browser path.
+	if !managed {
+		t.Fatal("Cloudflare JavaScript and cookie interstitial was not detected")
+	}
+}
+
 func TestAuthenticateSession_keepsFrontChannelStateTransitionsInTheBrowser(t *testing.T) {
 	// Given: the email continuation is challenged and the remaining state transitions are successful.
 	browser := &fakeOAuthBrowser{callback: "http://localhost:1455/auth/callback?code=browser-code&state=expected-state"}

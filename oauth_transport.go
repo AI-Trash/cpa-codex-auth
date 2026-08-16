@@ -182,5 +182,5 @@ func isManagedChallenge(response *http.Response, body []byte) bool {
 		return false
 	}
 	content := strings.ToLower(string(body))
-	return strings.Contains(content, "cf-chl") || strings.Contains(content, "challenge-platform") || strings.Contains(content, "just a moment")
+	return strings.Contains(content, "cf-chl") || strings.Contains(content, "challenge-platform") || strings.Contains(content, "just a moment") || strings.Contains(content, "enable javascript and cookies to continue")
 }
