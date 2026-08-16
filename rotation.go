@@ -12,10 +12,11 @@ import (
 )
 
 type authenticatedAccount struct {
-	client      *client.Client
-	accessToken string
-	email       string
-	prompt      *prompter
+	client               *client.Client
+	accessToken          string
+	email                string
+	credentialLogEnabled bool
+	prompt               *prompter
 }
 
 type passwordReset struct {
@@ -37,6 +38,7 @@ type credentialRotationOperations struct {
 	enrollTOTP     func(context.Context, *client.Client, string) (string, error)
 	refreshSession func(context.Context, string, string) (*authenticatedOAuth, error)
 	resetPassword  func(context.Context, passwordReset) error
+	appendChange   func(credentialChange) error
 }
 
 func rotateCredentials(ctx context.Context, account authenticatedAccount, targets rotationTargets, password, totpSecret string) (string, string, error) {
@@ -66,13 +68,17 @@ func rotateCredentials(ctx context.Context, account authenticatedAccount, target
 			if err != nil {
 				return nil, fmt.Errorf("create refreshed authentication client: %w", err)
 			}
-			refreshedAuthentication, err := authenticate(ctx, refreshedClient, account.email, currentPassword, newTOTPSecret, account.prompt)
+			refreshedAuthentication, err := authenticate(ctx, refreshedClient, account.email, currentPassword, newTOTPSecret, account.credentialLogEnabled, account.prompt)
 			if err != nil {
 				return nil, fmt.Errorf("refresh authentication session: %w", err)
 			}
 			return refreshedAuthentication, nil
 		},
 		resetPassword: resetAccountPassword,
+		appendChange: func(change credentialChange) error {
+			change.Email = account.email
+			return appendCredentialChange(change, account.credentialLogEnabled)
+		},
 	})
 	if err != nil {
 		return password, totpSecret, err
@@ -87,6 +93,10 @@ func rotateCredentials(ctx context.Context, account authenticatedAccount, target
 }
 
 func executeCredentialRotation(ctx context.Context, request credentialRotationRequest, targets rotationTargets, operations credentialRotationOperations) (string, string, error) {
+	appendChange := operations.appendChange
+	if appendChange == nil {
+		appendChange = func(credentialChange) error { return nil }
+	}
 	if targets&rotateTOTP != 0 && request.info.isEnabled() {
 		factorID, err := request.info.authenticatorFactorID()
 		if err != nil {
@@ -95,12 +105,18 @@ func executeCredentialRotation(ctx context.Context, request credentialRotationRe
 		if err := operations.disableTOTP(ctx, mfaSession{client: request.account.client, accessToken: request.account.accessToken}, factorID); err != nil {
 			return "", "", err
 		}
+		if err := appendChange(credentialChange{Email: request.account.email, Operation: credentialChangeTOTPDisabled, FactorID: factorID}); err != nil {
+			return "", "", err
+		}
 	}
 	var newTOTPSecret string
 	if targets&rotateTOTP != 0 {
 		var err error
 		newTOTPSecret, err = operations.enrollTOTP(ctx, request.account.client, request.account.accessToken)
 		if err != nil {
+			return "", "", err
+		}
+		if err := appendChange(credentialChange{Email: request.account.email, Operation: credentialChangeTOTPEnrolled, TOTPSecret: newTOTPSecret}); err != nil {
 			return "", "", err
 		}
 		if _, err := fmt.Fprintf(request.account.prompt.output, "Generated TOTP secret: %s\n", newTOTPSecret); err != nil {
@@ -124,6 +140,9 @@ func executeCredentialRotation(ctx context.Context, request credentialRotationRe
 		newPassword: request.newPassword,
 		prompt:      request.account.prompt,
 	}); err != nil {
+		return "", "", err
+	}
+	if err := appendChange(credentialChange{Email: request.account.email, Operation: credentialChangePasswordReset, Password: request.newPassword}); err != nil {
 		return "", "", err
 	}
 	if _, err := fmt.Fprintf(request.account.prompt.output, "Generated password: %s\n", request.newPassword); err != nil {

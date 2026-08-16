@@ -223,3 +223,45 @@ func TestExecuteCredentialRotation_whenTOTPOnly_preservesPasswordAndSkipsReset(t
 		t.Fatalf("rotation calls = %v, want [enroll]", calls)
 	}
 }
+
+func TestExecuteCredentialRotation_appendsEachSuccessfulAccountChange(t *testing.T) {
+	// Given: a combined rotation with an existing authenticator.
+	var changes []credentialChange
+	request := credentialRotationRequest{
+		account:     authenticatedAccount{client: &client.Client{}, email: "user@example.com", prompt: &prompter{output: new(bytes.Buffer)}},
+		info:        mfaInfo{EnabledV2: true, DefaultFactorID: "old-totp", Factors: []mfaFactor{{ID: "old-totp", Type: "totp"}}},
+		newPassword: "new-password",
+	}
+	operations := credentialRotationOperations{
+		disableTOTP: func(context.Context, mfaSession, string) error { return nil },
+		enrollTOTP:  func(context.Context, *client.Client, string) (string, error) { return "new-totp", nil },
+		refreshSession: func(context.Context, string, string) (*authenticatedOAuth, error) {
+			return &authenticatedOAuth{session: &oauthSession{client: &client.Client{}}}, nil
+		},
+		resetPassword: func(context.Context, passwordReset) error { return nil },
+		appendChange: func(change credentialChange) error {
+			changes = append(changes, change)
+			return nil
+		},
+	}
+
+	// When: all selected mutations succeed.
+	_, _, err := executeCredentialRotation(context.Background(), request, rotateTOTP|rotatePassword, operations)
+
+	// Then: disable, enrollment, and password reset each produce one detailed append record.
+	if err != nil {
+		t.Fatalf("execute credential rotation: %v", err)
+	}
+	wantOperations := []string{credentialChangeTOTPDisabled, credentialChangeTOTPEnrolled, credentialChangePasswordReset}
+	if len(changes) != len(wantOperations) {
+		t.Fatalf("credential changes = %#v", changes)
+	}
+	for index, operation := range wantOperations {
+		if changes[index].Operation != operation || changes[index].Email != request.account.email {
+			t.Fatalf("credential change %d = %#v", index, changes[index])
+		}
+	}
+	if changes[0].FactorID != "old-totp" || changes[1].TOTPSecret != "new-totp" || changes[2].Password != "new-password" {
+		t.Fatalf("credential change details = %#v", changes)
+	}
+}
