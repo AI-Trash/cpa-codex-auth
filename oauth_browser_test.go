@@ -1,9 +1,32 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"testing"
+
+	"github.com/chromedp/chromedp"
 )
+
+func TestNewOAuthBrowserContexts_doesNotInheritRequestCancellation(t *testing.T) {
+	requestContext, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	allocatorContext, browserContext, cancelAllocator, cancelBrowser := newOAuthBrowserContexts(requestContext, []chromedp.ExecAllocatorOption{})
+	defer cancelBrowser()
+	defer cancelAllocator()
+
+	select {
+	case <-allocatorContext.Done():
+		t.Fatal("allocator context inherited the canceled request context")
+	default:
+	}
+	select {
+	case <-browserContext.Done():
+		t.Fatal("browser context was canceled before browser startup")
+	default:
+	}
+}
 
 func TestOAuthBrowserHeaders_excludesBrowserOwnedMetadata(t *testing.T) {
 	// Given: a direct request with browser-owned metadata and application headers.

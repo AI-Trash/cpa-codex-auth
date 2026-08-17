@@ -47,8 +47,7 @@ func launchOAuthBrowser(ctx context.Context, request oauthBrowserLaunchRequest) 
 	if proxyURL := request.Client.ProxyURL(); proxyURL != "" {
 		opts = append(opts, chromedp.ProxyServer(proxyURL))
 	}
-	allocatorContext, cancelAllocator := chromedp.NewExecAllocator(ctx, opts...)
-	browserContext, cancelBrowser := chromedp.NewContext(allocatorContext)
+	_, browserContext, cancelAllocator, cancelBrowser := newOAuthBrowserContexts(ctx, opts)
 	browser := &chromedpOAuthBrowser{
 		client:          request.Client,
 		profileDir:      profileDir,
@@ -69,6 +68,12 @@ func launchOAuthBrowser(ctx context.Context, request oauthBrowserLaunchRequest) 
 		return nil, err
 	}
 	return browser, nil
+}
+
+func newOAuthBrowserContexts(_ context.Context, opts []chromedp.ExecAllocatorOption) (context.Context, context.Context, context.CancelFunc, context.CancelFunc) {
+	allocatorContext, cancelAllocator := chromedp.NewExecAllocator(context.Background(), opts...)
+	browserContext, cancelBrowser := chromedp.NewContext(allocatorContext)
+	return allocatorContext, browserContext, cancelAllocator, cancelBrowser
 }
 
 func (b *chromedpOAuthBrowser) Fetch(ctx context.Context, request oauthBrowserFetchRequest) (*http.Response, error) {
