@@ -47,16 +47,7 @@ func fetchSentinelChallengeHeadless(request sentinelBrowserRequest) ([]byte, err
 	}
 	defer os.RemoveAll(profileDir)
 
-	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
-	opts = append(opts,
-		chromedp.ExecPath(executablePath),
-		chromedp.UserDataDir(profileDir),
-		chromedp.UserAgent(client.UA),
-		chromedp.WindowSize(1280, 720),
-	)
-	if request.proxyURL != "" {
-		opts = append(opts, chromedp.ProxyServer(request.proxyURL))
-	}
+	opts := sentinelBrowserAllocatorOptions(executablePath, profileDir, request.proxyURL)
 
 	allocatorContext, cancelAllocator := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer cancelAllocator()
@@ -78,4 +69,21 @@ func fetchSentinelChallengeHeadless(request sentinelBrowserRequest) ([]byte, err
 		return nil, fmt.Errorf("run Sentinel in headless browser: %w", err)
 	}
 	return []byte(result), nil
+}
+
+func sentinelBrowserAllocatorOptions(executablePath, profileDir, proxyURL string) []chromedp.ExecAllocatorOption {
+	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
+	opts = append(opts,
+		chromedp.NoSandbox,
+		chromedp.DisableGPU,
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.ExecPath(executablePath),
+		chromedp.UserDataDir(profileDir),
+		chromedp.UserAgent(client.UA),
+		chromedp.WindowSize(1280, 720),
+	)
+	if proxyURL != "" {
+		opts = append(opts, chromedp.ProxyServer(proxyURL))
+	}
+	return opts
 }
