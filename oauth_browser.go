@@ -37,16 +37,7 @@ func launchOAuthBrowser(ctx context.Context, request oauthBrowserLaunchRequest) 
 	if err != nil {
 		return nil, fmt.Errorf("create OAuth browser profile: %w", err)
 	}
-	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
-	opts = append(opts,
-		chromedp.ExecPath(executablePath),
-		chromedp.UserDataDir(profileDir),
-		chromedp.UserAgent(client.UA),
-		chromedp.WindowSize(1280, 720),
-	)
-	if proxyURL := request.Client.ProxyURL(); proxyURL != "" {
-		opts = append(opts, chromedp.ProxyServer(proxyURL))
-	}
+	opts := oauthBrowserAllocatorOptions(executablePath, profileDir, request.Client.ProxyURL())
 	_, browserContext, cancelAllocator, cancelBrowser := newOAuthBrowserContexts(ctx, opts)
 	browser := &chromedpOAuthBrowser{
 		client:          request.Client,
@@ -68,6 +59,23 @@ func launchOAuthBrowser(ctx context.Context, request oauthBrowserLaunchRequest) 
 		return nil, err
 	}
 	return browser, nil
+}
+
+func oauthBrowserAllocatorOptions(executablePath, profileDir, proxyURL string) []chromedp.ExecAllocatorOption {
+	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
+	opts = append(opts,
+		chromedp.NoSandbox,
+		chromedp.DisableGPU,
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.ExecPath(executablePath),
+		chromedp.UserDataDir(profileDir),
+		chromedp.UserAgent(client.UA),
+		chromedp.WindowSize(1280, 720),
+	)
+	if proxyURL != "" {
+		opts = append(opts, chromedp.ProxyServer(proxyURL))
+	}
+	return opts
 }
 
 func newOAuthBrowserContexts(_ context.Context, opts []chromedp.ExecAllocatorOption) (context.Context, context.Context, context.CancelFunc, context.CancelFunc) {

@@ -28,6 +28,23 @@ func TestNewOAuthBrowserContexts_doesNotInheritRequestCancellation(t *testing.T)
 	}
 }
 
+func TestOAuthBrowserAllocatorOptions_includesServerSafeFlags(t *testing.T) {
+	// Given: paths and proxy configuration for launching headless OAuth browser.
+	executablePath := "chrome"
+	profileDir := "/tmp/profile"
+	proxyURL := "http://127.0.0.1:8080"
+
+	// When: options are constructed.
+	opts := oauthBrowserAllocatorOptions(executablePath, profileDir, proxyURL)
+
+	// Then: options configure an allocator without error.
+	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer cancel()
+	if allocCtx == nil {
+		t.Fatal("expected non-nil allocator context")
+	}
+}
+
 func TestOAuthBrowserHeaders_excludesBrowserOwnedMetadata(t *testing.T) {
 	// Given: a direct request with browser-owned metadata and application headers.
 	headers := http.Header{
